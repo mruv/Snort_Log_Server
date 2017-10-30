@@ -1,11 +1,12 @@
 ## Imports
-from PyQt5.QtWidgets import QMainWindow, QAction, QSplitter, QDialog, QWidget, QMenu, QToolButton, \
-							 QLabel, QFormLayout, QTableWidget, QGroupBox, QMessageBox, QHBoxLayout, \
-							  QVBoxLayout, QTableWidgetItem, QAbstractItemView, QSystemTrayIcon, QPushButton, QApplication
+from PyQt5.QtWidgets import QMainWindow, QAction, QSplitter, QDialog, QWidget, QMenu, QToolButton, QTreeWidget, QFrame, \
+							 QLabel, QFormLayout, QTableWidget, QGroupBox, QMessageBox, QHBoxLayout, QTreeWidgetItem, QTextEdit, \
+							  QVBoxLayout, QTableWidgetItem, QAbstractItemView, QSystemTrayIcon, QPushButton, QApplication, QLineEdit
 from PyQt5.QtGui import QIcon
 from PyQt5.QtCore import pyqtSlot, Qt, pyqtSignal, QEventLoop
 from PyQt5.QtNetwork import QUdpSocket, QHostAddress
 import threading
+import paramiko
 from time import sleep
 import sys
 import Net
@@ -70,7 +71,7 @@ class MainView(QMainWindow):
 		self.__hhview.initView()
 		self.__sys_tray_icon.setHHVVisible.connect(self.__hhview.showHHView)
 		self.newHostileMsg_MW.connect(self.__hhview.addToHostileQueue_HHV)
-		self.__hhview.newHostileMsgFromHost_HHV.connect(self.__sys_tray_icon.alert_STI)
+		self.__hhview.newHostileAlert.connect(self.__sys_tray_icon.alert_STI)
 
 	def initSysTray(self):
 		"""
@@ -251,53 +252,49 @@ class CenterView(QSplitter):
 ## Message View Class
 #######################################################
 class MessageView(QGroupBox):
-
+	#win = QWidget()
 	def __init__(self):
 		super(MessageView, self).__init__("  Message Description  ")
+		#self.__md = QLabel('wertyuiop[')
 		self.__ly = QVBoxLayout()
-		self.__fm = QFormLayout()
-		#self.__ly.addLayout(self.__fm)
-		self.setLayout(self.__fm)
-		#labels
-		self.__src   = QLabel()
-		self.__dst   = QLabel()
-		self.__dttm  = QLabel()
-		self.__proto = QLabel()
-		self.__fc    = QLabel()
-		self.__sv    = QLabel()
-		self.__msg   = QLabel()
-		self.__thrt  = QLabel()
-		# demo
-		#self.__fm.addRow("Source : ", QLabel("172.99.1.3:4564"))
-		self.__fm.addRow('Source', self.__src)
-		self.__fm.addRow('Destination', self.__dst)
-		self.__fm.addRow('Date Time', self.__dttm)
-		self.__fm.addRow('Protocol', self.__proto)
-		self.__fm.addRow('Facility', self.__fc)
-		self.__fm.addRow('Severity', self.__sv)
-		self.__fm.addRow('Threat ?', self.__thrt)
-		self.__fm.addRow('Message', self.__msg)
+		self.__ly.addWidget(QLabel('sdfghjkrtyuio'))
+		self.setLayout(self.__ly)	
 		self.setContentsMargins(15, 15, 15, 15)
 
-
-	@pyqtSlot(Net.Desc)
+	@pyqtSlot(Net.Message)
 	def updateMsgView(self, msg):
 		#update message description form
 		#print('Here')
-		self.__dttm.setText(msg[0])
-		self.__src.setText(msg[1])
-		self.__dst.setText(msg[2])
-		self.__proto.setText(msg[3])
-		self.__fc.setText(msg[4])
-		self.__sv.setText(msg[5])
-		self.__thrt.setText(msg[6])
-		self.__msg.setText(msg[7])
-
+		self.__ly.takeAt(0)
+		self.__ly.addWidget(MessageView.getView(msg))
 
 	@staticmethod
 	def getView(msg):
 		# a tree widget
-		pass
+		lbls = [('Date','Date and Time'), ('Src','Packet Source'), ('Dest','Packet Destination'), ('Proto','Packet Protocol'), \
+				('Fac','Facility'), ('Sev','Severity'), ('Threat ?', 'Is_Threat'),(['Error Msg', 'Classification', 'Priority'], \
+					'Snort Message Description')]
+		tree = QTreeWidget()
+		lst = []
+		for i in range(len(lbls)):
+			prnt = QTreeWidgetItem()
+			prnt.setText(0, lbls[i][1])
+			if i == 7:
+				m = msg[7]
+				for j in range(len(m)):
+					ch = QTreeWidgetItem()
+					ch.setText(0, lbls[i][0][j].ljust(20,'.') + m[j].rjust(50,'.'))
+					prnt.addChild(ch)
+			else:
+				ch = QTreeWidgetItem()
+				ch.setText(0, lbls[i][0].ljust(20,'.') + msg[i].rjust(50,'.'))
+				prnt.addChild(ch)
+			# add item to list
+			lst.append(prnt)
+
+		tree.addTopLevelItems(lst)
+		tree.expandAll()
+		return tree
 
 
 #######################################################
@@ -305,7 +302,7 @@ class MessageView(QGroupBox):
 #######################################################
 class LogsView(QGroupBox):
 
-	rowClicked = pyqtSignal(Net.Desc)
+	rowClicked = pyqtSignal(Net.Message)
 	def __init__(self):
 		"""
 		constructor
@@ -342,23 +339,28 @@ class LogsView(QGroupBox):
 		#print('$$ ADDED $$')
 		self.__tb.setRowCount(self.__c + 1)
 		for i in range(8):
-			self.__tb.setItem(self.__c, i, QTableWidgetItem(msg[i]))
+			if i == 7:
+				self.__tb.setItem(self.__c, i, QTableWidgetItem(msg[i][0]))
+			else:
+				self.__tb.setItem(self.__c, i, QTableWidgetItem(msg[i]))
 
 		self.__c += 1
+		Net.LogUtils.addToList(msg)
 
 	@pyqtSlot()
 	def clearLogs_L(self):
 		self.__tb.clearContents()
 		self.__c = 0
+		# clear list
+		Net.LogUtils.clearList()
 
 	@pyqtSlot()
 	def focusedRow(self):
-		items = {}
-		row = self.__tb.selectedItems()
-		if len(row) == 8:
-			for i in range(8):
-				items[i] = row[i].text()
-			self.rowClicked.emit(Net.Desc(items))
+		row = self.__tb.currentRow()
+		print(row)
+		if self.__c != 0:
+			self.rowClicked.emit(Net.LogUtils.getMsgFromList(row))
+
 
 
 ##########################################################
@@ -405,8 +407,8 @@ class SystemTrayIcon(QSystemTrayIcon):
 		self.__min.triggered.connect(self.minimize)
 
 	@pyqtSlot('QString')
-	def alert_STI(self, ip):
-		self.showMessage('Logs','A new hostile packet from ' + ip, QSystemTrayIcon.Warning)
+	def alert_STI(self, msg):
+		self.showMessage('Logs', msg, QSystemTrayIcon.Warning)
 
 	def setMinEnabled(self, boolVal):
 		self.__min.setEnabled(boolVal)
@@ -443,7 +445,7 @@ class HostileHostsView(QWidget):
 
 	# new hostile host
 	# newHostileHost_HHV        = pyqtSignal('QString')
-	newHostileMsgFromHost_HHV = pyqtSignal('QString')
+	newHostileAlert = pyqtSignal('QString')
 	def __init__(self):
 		"""
 		constructor
@@ -452,7 +454,7 @@ class HostileHostsView(QWidget):
 		#variables
 		self.__c           = 0
 		self.__hhosts      = Net.HostileHosts()
-		self.__notf        = Notifications()
+		#self.__notf        = Notifications()
 		self.__list        = QTableWidget()
 		self.__dlt         = QPushButton('Delete')
 		self.__act         = QPushButton('Actions')
@@ -461,19 +463,21 @@ class HostileHostsView(QWidget):
 		# icons
 		self.__dlt.setIcon(QIcon('icons\\delete.png'))
 		self.__cls.setIcon(QIcon('icons\\close.png'))
-		self.__act.setIcon(QIcon('icons\\list.png'))
+		#self.__act.setIcon(QIcon('icons\\list.png'))
 		self.__dlt.setToolTip('Delete host from this list')
 		self.__cls.setToolTip('Hide this window')
 		self.__act.setToolTip('A list of actions')
 
 		# actions
 		self.__deauth      = QAction('Deauthenticate')
-		self.__ignore      = QAction('Ignore')
+		self.__add_to_bl   = QAction('Add To Blacklist')
+		self.__add_to_wl   = QAction('Add To Watch List')
 		#connections
 		self.__cls.clicked.connect(self.hide)
 		self.__hhosts.newHostileHost_HH.connect(self.addToHostileView)
-		self.__hhosts.newHostileMsgFromHost_HH.connect(self.alert_HHV)
-		self.__notf.viewHostileHosts.connect(self.showHHView)
+		self.__add_to_bl.triggered.connect(self.addToBl)
+		#self.__hhosts.newHostileMsgFromHost_HH.connect(self.alert_HHV)
+		#self.__notf.viewHostileHosts.connect(self.showHHView)
 		#default
 		#self.__act.setEnabled(False)
 		#self.__dlt.setEnabled(False)
@@ -497,15 +501,15 @@ class HostileHostsView(QWidget):
 		x       = (MainView.dW - 600)
 		self.setGeometry(x, y, 600, 400)
 		#add layouts
-		self.__action_menu.addActions([self.__deauth, self.__ignore])
+		self.__action_menu.addActions([self.__deauth, self.__add_to_bl, self.__add_to_wl])
 		self.__act.setMenu(self.__action_menu)
 		self.finish()
 
 		# initialize notifications interface
-		self.__notf.initView()
+		#self.__notf.initView()
 		#style
 		self.setContentsMargins(15, 15, 15, 15)
-		self.setWindowFlags(Qt.FramelessWindowHint)
+		#self.setWindowFlags(Qt.FramelessWindowHint)
 
 
 	def finish(self):
@@ -533,7 +537,7 @@ class HostileHostsView(QWidget):
 		self.__c += 1
 
 		#notify sys admin
-		self.notify(host[0].text())
+		self.notify()
 
 	@pyqtSlot(int)
 	def removeHost(self, row):
@@ -549,80 +553,143 @@ class HostileHostsView(QWidget):
 		#print("ADDED")
 		self.__hhosts.addToHostileQueue_HH(src)
 
-	@pyqtSlot('QString')
-	def alert_HHV(self, ip):
-		self.newHostileMsgFromHost_HHV.emit(ip)
-
 	#@pyqtSlot('QString')
-	def notify(self, ip):
-		self.__notf.add(ip)
-		self.__notf.setVisible(True)
+	def notify(self):
+		if not self.isVisible():
+			# create a notification 
+			m = QMessageBox()
+			#m.setWindowFlags(Qt.FramelessWindowHint)
+			#m.setSize(600, 400)
+			m.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+			m.setText('<b>Hey Sir! you have a new hostile host</b>')
+			m.setInformativeText('Would you like to view the host\'s information?')
+			val = m.exec()
+			if val == QMessageBox.Yes:
+				self.showHHView()
+		else:
+			# send an alert
+			self.newHostileAlert.emit('You have a new hostile host')
 
+	"""
 	def closeEvent(self, event):
 		# close the notifications window too
 		self.__notf.close()
+	"""
 
-#############################################################
-## Notification --> about a new hostile host
-#############################################################
-class Notifications(QDialog):
+	@pyqtSlot()
+	def addToBl(self):
+		lp = QEventLoop()
+		ssh = SshConnView(self.__list.selectedItems()[1].text(), 'Add to BL')
+		ssh.initView()
+		ssh.exit.connect(lp.exit)
+		lp.exec()
 
-	viewHostileHosts = pyqtSignal()
-	def __init__(self):
-		"""
-		constructor
-		"""
-		super(Notifications, self).__init__()
-		self.__lab    = QLabel()
-		self.__view   = QPushButton('View')
-		self.__ignore = QPushButton('Ignore')
-		self.__list   = []
 
-		self.__lab.setWordWrap(True)
-		self.__view.clicked.connect(self.view)
-		self.__ignore.clicked.connect(self.ignoreAlert)
+
+############################################################
+## SSH connection 
+############################################################
+class SshConnView(QWidget):
+	# close signal
+	exit = pyqtSignal()
+
+	def __init__(self, host, action):
+		super(SshConnView, self).__init__()
+		self.__u      = QLineEdit()
+		self.__p      = QLineEdit()
+		self.__gwip   = QLineEdit()
+		self.__gwport = QLineEdit('22')
+		self.__c      = QPushButton('connect')
+		self.__bck    = QPushButton('Retry')
+		self.__h      = host
+		self.__a      = action
+		self.__conn   = paramiko.SSHClient()
+		self.__log    = QTextEdit()
+		#self.__av     = True
+		#self.__sb     = QStatusBar()
+
+		# layouts
+		self.__ml = QVBoxLayout()
+		self.__data  = QFrame()
+
 
 	def initView(self):
-		mly  = QVBoxLayout()
-		b1ly = QHBoxLayout()
-		b2ly = QHBoxLayout()
-		bly  = QHBoxLayout()
-		#ily  = QHBoxLayout()
-		# configs
-		self.setGeometry((MainView.dW - 420), ( MainView.dH - 150), 400, 100)
-		self.setWindowFlags(Qt.FramelessWindowHint)
-		self.__lab.setAlignment(Qt.AlignCenter)
-		# add widgets to layout managers
-		#ily.addWidget(self.__lab)
-		b1ly.addWidget(self.__view)
-		b2ly.addWidget(self.__ignore)
-		b1ly.addStretch()
-		b1ly.setAlignment(Qt.AlignCenter)
-		b2ly.addStretch()
-		b2ly.setAlignment(Qt.AlignCenter)
-		bly.addLayout(b1ly)
-		bly.addLayout(b2ly)
-		mly.addWidget(self.__lab)
-		mly.addLayout(bly)
-		mly.setSpacing(10)
-		#mly.setAlignment(Qt.AlignCenter)
-		self.setLayout(mly)
+		il = QFormLayout()
+		self.__c.setEnabled(False)
+		self.__log.setReadOnly(True)
+		
+		il.addRow('Network Gateway Ip', self.__gwip)
+		il.addRow('Network Gateway port', self.__gwport)
+		il.addRow('SSH Server username', self.__u)
+		il.addRow('SSH Server password', self.__p)
+		il.addRow('', self.__c)
+		self.__p.setEchoMode(QLineEdit.Password)
 
+		#connections
+		self.__c.clicked.connect(self.cnnct)
+		self.__bck.clicked.connect(self.retry)
+		self.__u.textEdited.connect(self.validate)
+		self.__p.textEdited.connect(self.validate)
+		self.__gwip.textEdited.connect(self.validate)
+		self.__gwport.textEdited.connect(self.validate)
+		# window styles
+		self.setWindowIcon(QIcon('icons\\notf.png'))
+		self.setWindowTitle('Secure_Shell_Client_Interface')
+		self.setMinimumSize(400, 500)
+		#
+		#self.__il.addStretch()
+		self.__data.setLayout(il)
+		self.__ml.addWidget(self.__data)
+		self.__ml.addWidget(self.__bck)
+		self.__bck.setVisible(False)
+		self.__ml.addWidget(self.__log)
+		self.setLayout(self.__ml)
+		self.show()
+		#self.exec_()
 
-	def updateNotf(self, ip):
-		self.__lab.setText('You have %d hostile hosts : <b>%s</b>' % (len(self.__list), str(self.__list)))
-
-	def add(self, ip):
-		self.__list.append(ip)
-		self.updateNotf(ip)
+	@pyqtSlot('QString')
+	def validate(self, txt):
+		if self.__u.text() and self.__p.text() and self.__gwport.text() and self.__gwip.text():
+			self.__c.setEnabled(True)
+		else:
+			self.__c.setEnabled(False)
 
 	@pyqtSlot()
-	def view(self):
-		self.__lab.setText('<b>0 hostile hosts</b>')
-		self.__list = []
-		self.setVisible(False)
-		self.viewHostileHosts.emit()
+	def cnnct(self):
+		# create a connection first
+		self.__data.setVisible(False)
+		self.__bck.setVisible(True)
+		#sleep(2)
+		self.__conn = paramiko.SSHClient()
+		self.__conn.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+		try:
+			self.__log.append('<b> Connecting to SSH server ... </b>')
+			self.__conn.connect(username=self.__u.text(), password=self.__p.text(), \
+				hostname=self.__gwip.text(), port=int(self.__gwport.text()))
+			#sleep(2)
+			self.__log.append('<span style="color:green;"><b> CONNECTED </b></span>')
+		except Exception as ex:
+			#return ex
+			self.__log.append('<b> Connection failed : %s </b>' % ex )
+
+		#return 'Connected'
 
 	@pyqtSlot()
-	def ignoreAlert(self):
-		self.setVisible(False)
+	def retry(self):
+		self.__u.clear()
+		self.__gwport.setText('22')
+		self.__gwip.clear()
+		self.__gwport.clear()
+		self.__c.setEnabled(False)
+		# swap views
+		self.__data.setVisible(True)
+		self.__bck.setVisible(False)
+
+	def execute(self, cmds):
+		for cmd in cmds:
+			pass
+
+	def closeEvent(self, event):
+		if self.__conn:
+			self.__conn.close()
+		self.exit.emit()
