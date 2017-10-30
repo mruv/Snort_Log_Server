@@ -1,10 +1,9 @@
 
 from PyQt5.QtCore import pyqtSlot, QObject, pyqtSignal
-from PyQt5.QtWidgets import QTableWidgetItem, QDialog
+from PyQt5.QtWidgets import QTableWidgetItem
 import queue
 import time
 import threading
-import paramiko
 
 #import logging
 #logging.getLogger('scapy.runtime').setLevel(logging.ERROR)
@@ -33,23 +32,12 @@ class Message(dict):
 		self[7]  = msg
 
 	def __str__(self):
-		return '< ' + self[0] + ' | ' + self[1] + ' => ' + self[2] +' | ' + self[3] + ' | Fac:' + self[4] + \
-				' | Sev:' + self[5] + ' | ' + ('THREAT' if(self[6] == 'YES') else 'NOT_THREAT') + ' | ' + self[7] + ' >'
+		return '< ' + self[0] + ' | ' + self[1] + ' => ' + self[2] +' | ' + self[3] + \
+				('THREAT' if(self[6] == 'YES') else 'NOT_THREAT') + ' >'
 
 	def isThreat(self):
 		return True if(self[6] == 'YES') else False
 
-
-###############################################################
-## Message description, Can't use dict directly as the type to
-## be passed to slot MessageView.updateMsgView()
-###############################################################
-class Desc(dict):
-	def __init__(self, data):
-		"""
-		constructor
-		"""
-		super(Desc, self).__init__(data)
 
 
 ###############################################################
@@ -58,11 +46,24 @@ class Desc(dict):
 class LogUtils:
 
 	__in_q  = queue.Queue()
+	__msgs  = []
 
 	@staticmethod
 	@pyqtSlot('QString')
 	def addToInQueue(msg):
 		LogUtils.__in_q.put(msg)
+
+	@staticmethod
+	def addToList(msg):
+		LogUtils.__msgs.append(msg)
+
+	@staticmethod
+	def clearList():
+		LogUtils.__msgs = []
+
+	@staticmethod
+	def getMsgFromList(index):
+		return LogUtils.__msgs[index]
 
 	@staticmethod
 	def getFromInQueue():
@@ -86,6 +87,7 @@ class LogUtils:
 
 		msg_str = msg[:pos]
 		msg_str = msg_str.strip(' ')
+		is_threat, msg_desc = LogUtils.parseAlert(msg_str)
 		tmp = pos + 1
 		msg = msg[tmp:]
 		pos = msg.find('}')
@@ -97,11 +99,26 @@ class LogUtils:
 		ips = msg.split('->')
 
 		#dttm, src_addr, dst_addr, src_prt, dst_prt, proto, fc, sv, msg, is_threat
-		return Message(time.asctime(), ips[0], ips[1], proto, sev_fc[0], sev_fc[2], msg_str, True)
+		return Message(time.asctime(), ips[0], ips[1], proto, sev_fc[0], sev_fc[2], msg_desc, is_threat)
 
 	@staticmethod
-	def parseErrorMsg(err):
-		pass
+	def parseAlert(err):
+		if 'Classification' not in err:
+			return (True, {0:err})
+
+		# Reset outside window [Classification: Potentially Bad Traffic] [Priority: 2]
+		pos = err.find('[')
+		msg_str = err[:pos].strip(' ')
+		err = err[pos:]
+		pos = err.find(']') + 1
+		clf = err[:pos].strip('[ ]')
+		err = err[pos + 1:].strip('[ ]')
+		prty = err.split(':')
+		clf = clf.split(':')
+
+		return (True, {0:msg_str, 1:clf[1], 2:prty[1]})
+
+
 
 
 ###################################################################
@@ -216,33 +233,3 @@ class HostileHosts(QObject):
 			if h[0].text() == ip:
 				return h
 		return None
-
-
-
-############################################################
-## SSH connection 
-############################################################
-class Ssh:
-
-	def __init__(self, user, pwd, host):
-		self.__u = user
-		self.__p = pwd
-		self.__h = host
-
-	def connect(self):
-		# create a connection first
-		self.__conn = paramiko.SSHClient()
-		self.__conn.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-		try:
-			self.__conn.connect(username=self.__u, password=self.__p, hostname=self.__h)
-		except Exception as ex:
-			return ex
-
-		return 'Connected'
-
-	def execute(self, cmds):
-		for cmd in cmds:
-			pass
-
-	def clean(self):
-		self.__conn.close()
