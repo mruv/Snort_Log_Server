@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import QTableWidgetItem
 import queue
 import time
 import threading
+from subprocess import Popen, PIPE
 
 #import logging
 #logging.getLogger('scapy.runtime').setLevel(logging.ERROR)
@@ -32,7 +33,7 @@ class Message(dict):
 		self[7]  = msg
 
 	def __str__(self):
-		return '< ' + self[0] + ' | ' + self[1] + ' => ' + self[2] +' | ' + self[3] + \
+		return '< ' + self[0] + ' | ' + self[1] + ' => ' + self[2] +' | ' + self[3] + ' | ' + \
 				('THREAT' if(self[6] == 'YES') else 'NOT_THREAT') + ' >'
 
 	def isThreat(self):
@@ -68,6 +69,7 @@ class LogUtils:
 	@staticmethod
 	def getFromInQueue():
 		return LogUtils.__in_q.get()
+		
 
 	@staticmethod
 	def parseMsg(msg):
@@ -124,29 +126,38 @@ class LogUtils:
 ###################################################################
 ## Network Node
 ###################################################################
-class Host(dict):
+class Host(QObject):
 
-	def __init__(self, ip = '', mac = '******', os = '******', name = '******', usrs = []):
+	def __init__(self, ip = '', mac = 'Unknonw', c='1'):
 		"""
 		constructor
 		"""
 		super(Host, self).__init__()
-		self[0] = QTableWidgetItem(ip)
-		self[1] = QTableWidgetItem(mac)
-		self[2] = QTableWidgetItem(name)
-		self[3] = QTableWidgetItem(os)
-		self[4] = QTableWidgetItem('[ ***, ]')
-		self[5] = QTableWidgetItem('1')
+		self.ip    = QTableWidgetItem(ip)
+		self.mac   = QTableWidgetItem(mac)
+		self.count = QTableWidgetItem(c)
 
 	#overload operator
 	def __eq__(self, host):
+		return (host.ip.text() == self.ip.text())
+
+
+	def resolveMac(self):
 		"""
-		if self.__mac.text() == 'Unknown':
-			return host.ip().text() == self.__ip.text()
+		resolve the MAC address for this host
+		1) send ICMP probes
+		2) use 'arp' to check whether this IP has an entry in the ARP cache
+		"""
+		if HostileHosts.icmpProbe(self.ip.text()):
+			m = HostileHosts.getMac(self.ip.text())
+			if m:
+				self.mac.setText(m)
+			else:
+				self.mac.setText('Unknown')
 		else:
-			return host.mac().text() == self.__mac.text
-		"""
-		return (host[0].text() == self[0].text())
+			self.mac.setText('Unknown')
+
+
 
 
 ###################################################################
@@ -173,25 +184,23 @@ class HostileHosts(QObject):
 
 	def resolver(self):
 		while True:
-			try:
-				src = self.__hostile_q.get()
-				ip = src[:src.rfind(':')]
-				# get mac address
-				#mac = Host.getMac(ip)
-				#if mac == None:
-				#	mac = 'Unknown'
-				#print(ip)
+			src = self.__hostile_q.get()
+			ip = src[:src.rfind(':')]
 
-				h = Host(ip=ip)
-				if self.exists(h):
-					self.newHostileMsgFromHost_HH.emit(ip)
-					#print('Exists')
-				else:
-					self.newHostileHost_HH.emit(h)
-					self.__all_hostile_hosts.append(h)
-					#print('Does not exist')
-			except:
-				continue
+			h = Host(ip=ip)
+			if self.exists(h):
+				self.newHostileMsgFromHost_HH.emit(ip)
+				#print('Exists')
+			else:
+				h.resolveMac()
+				self.newHostileHost_HH.emit(h)
+				self.__all_hostile_hosts.append(h)
+				#print('Does not exist')
+			try:
+				pass
+			except Exception as ex:
+				print(ex)
+				
 				
 	# utility methods
 	@pyqtSlot('QString')
@@ -201,35 +210,51 @@ class HostileHosts(QObject):
 	def exists(self, h):
 		return (h in self.__all_hostile_hosts)
 
-	"""
-	@staticmethod
-	def getMac(ip):
-		res, un = srp(Ether(dst='ff:ff:ff:ff:ff:ff')/ARP(pdst=ip),\
-			timeout=2, retry=10)
-		for s, r in res:
-			return r[Ether].src
-		return None
-	"""
 
 	@pyqtSlot('QString')
 	def incr(self, ip):
 		#h = Host.getHostByMac(mac)
 		#if h == None:
 		h = self.getHostByIp(ip)
-		cur = int(h[5].text())
-		h[5].setText(str(cur + 1))
+		cur = int(h.count.text())
+		h.count.setText(str(cur + 1))
 
-	"""
-	@staticmethod
-	def getHostByMac(mac):
-		for h in Host.__all_hostile_hosts:
-			if h.mac().text() == mac:
-				return h
-		return None
-	"""
+
 
 	def getHostByIp(self, ip):
 		for h in self.__all_hostile_hosts:
-			if h[0].text() == ip:
+			if h.ip.text() == ip:
 				return h
 		return None
+
+
+	@staticmethod
+	def icmpProbe(ip):
+		cmd = 'c:\\Windows\\System32\\ping %s -n 3' % ip
+		p   = Popen(cmd, shell=True, stdin=PIPE, stderr=PIPE, stdout=PIPE)
+		res = p.stdout.read()
+
+		res = res.decode()
+		if len(p.stderr.read()) == 0:
+			if 'Destination host unreachable' in res:
+				return False
+			return True
+		else:
+			return False
+
+	@staticmethod
+	def getMac(ip):
+		cmd = 'c:\\Windows\\System32\\arp -a %s' % ip
+		p   = Popen(cmd, shell=True, stdin=PIPE, stderr=PIPE, stdout=PIPE)
+		res = p.stdout.read()
+
+		res = res.decode().strip('\r\n')
+		if 'No ARP' in res:
+			return False
+
+		res = res.strip('\r\n').replace('\r', '').split('\n')[-1:][0].strip(' ').split(' ')
+		fine = []
+		for i in res:
+			if len(i) > 5:
+				fine.append(i)
+		return (fine[1] if (len(fine) == 3) else False)
