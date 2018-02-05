@@ -1,9 +1,9 @@
 
 from PyQt5.QtWidgets import (
-							QMainWindow, QMenu, QSplitter, QAction, QTableWidget, QTableWidgetItem,
-							QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QAbstractItemView, QSystemTrayIcon,
-							QMessageBox, QFormLayout, QLineEdit, QLabel, QDialog, QTextEdit
-							)
+			QMainWindow, QMenu, QSplitter, QAction, QTableWidget, QTableWidgetItem,
+			QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QAbstractItemView, QSystemTrayIcon,
+			QMessageBox, QFormLayout, QLineEdit, QLabel, QDialog, QTextEdit
+			)
 from PyQt5.QtCore import (pyqtSlot, pyqtSignal, Qt)
 from PyQt5.QtGui import (QPalette, QFont, QColor, QIcon)
 from subprocess import (Popen, PIPE)
