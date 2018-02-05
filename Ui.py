@@ -1,73 +1,444 @@
-## Imports
-from PyQt5.QtWidgets import *
-from PyQt5.QtGui import QIcon, QColor, QPalette, QFont
-from PyQt5.QtCore import pyqtSlot, Qt, pyqtSignal, QEventLoop, QItemSelectionModel
-from PyQt5.QtNetwork import QUdpSocket, QHostAddress
-import threading
-import paramiko
-from time import sleep
+
+from PyQt5.QtWidgets import (
+							QMainWindow, QMenu, QSplitter, QAction, QTableWidget, QTableWidgetItem,
+							QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QAbstractItemView, QSystemTrayIcon,
+							QMessageBox, QFormLayout, QLineEdit, QLabel, QDialog, QTextEdit
+							)
+from PyQt5.QtCore import (pyqtSlot, pyqtSignal, Qt)
+from PyQt5.QtGui import (QPalette, QFont, QColor, QIcon)
+from subprocess import (Popen, PIPE)
 import sys
-import pickle
-import Net
+import time
+import threading
+import Util
 
 
-#############################################################
-## Main Window class
-#############################################################
-class MainView(QMainWindow):
+
+
+class SystemTrayIcon(QSystemTrayIcon):
+	""" run the server the background, use this icon to display the main window
 	"""
-	define the main window display
-	"""
-	#add a signal
-	msgProcessed     = pyqtSignal(Net.Message)
-	updateStatusBar  = pyqtSignal('QString')
-	newHostileMsg_MW = pyqtSignal('QString')
-	dH               = None
-	dW               = None
+
+	close_app = pyqtSignal()
+	show_app = pyqtSignal()
+
 	def __init__(self):
-		super(MainView, self).__init__()
-		#variables
-		self.__to_tray_action  = QAction('Collapse')
-		self.__exit_action     = QAction('Quit')
-		self.__clr_logs_action = QAction('Clear Logs')
-		self.__show_hostile    = QAction('Show Hostile Hosts')
-		self.__settings        = QAction('Settings')
-		self.__view_menu       = self.menuBar().addMenu('App')
 
-		#server stats
-		self.__socket = None
-		#system tray
-		self.__sys_tray_icon = SystemTrayIcon()
-		#a list of hostile hosts
-		self.__hhview = HostileHostsView()
+		super(SystemTrayIcon, self).__init__()
+		self.set_up_icon()
 
-	@staticmethod
-	def initDesktopSize():
-		d = QApplication.desktop()
-		rect = d.availableGeometry()
-		MainView.dW = rect.width()
-		MainView.dH = rect.height()
-
-
-	def initUi(self): 
+	def set_up_icon(self):
+		""" set an icon, add a menu and add actions to the menu
 		"""
-		Initialize the main window
+		self.__menu = QMenu()
+		self.__show = QAction("Show")
+		self.__quit = QAction("Quit")
+
+		# signals --> slots
+		self.__show.triggered.connect(self.show_app_slot)
+		self.__quit.triggered.connect(self.close_app_slot)
+
+		self.__menu.addActions([self.__show, self.__quit])
+		self.setIcon(QIcon('icons/app.png'))
+		self.setContextMenu(self.__menu)
+
+
+	@pyqtSlot()
+	def close_app_slot(self):
+		self.close_app.emit()
+
+
+	@pyqtSlot()
+	def show_app_slot(self):
+		self.setVisible(False)
+		self.show_app.emit()
+
+
+
+class Logs(QTableWidget):
+	""" display snort log messages here
+	"""
+
+	stop_server = pyqtSignal()
+	new_alert = pyqtSignal('QString')
+
+
+	def __init__(self):
+
+		super(Logs, self).__init__()
+		
+		# start udp server worker
+
+		self.__server_worker = Util.UdpServerWorker()
+		self.__server_worker.finished.connect(self.__server_worker.deleteLater)
+		self.__server_worker.finished.connect(self.__server_worker.close_socket)
+		self.__server_worker.finished_processing_msg.connect(self.add_to_logs)	
+		self.stop_server.connect(self.__server_worker.quit)
+		
+		self.__server_worker.start()
+		self.__cnt = 0
+
+
+	def style(self):
+		""" style the view
 		"""
-		#self.setGeometry(300, )
-		MainView.initDesktopSize()
-		#self.setWindowFlags(Qt.FramelessWindowHint)
-		self.setWindowTitle('-- Log Server --')
-		self.setWindowIcon(QIcon('icons/app.png'))
-		self.setGeometry(100,100,1150, 600)
-		#self.setSize(1050, 600)
-		self.createMenuBar()
-		self.createCenterWidget()
-		self.createStatusBar()
-		self.initSysTray()
-		self.initHostileHostsView()
-		self.setContentsMargins(0,5,0,0)
+		f = QFont('Lucida Console, Courier, monospace')
+		#f.setBold(True)
+		p = QPalette()
+		p.setColor(QPalette.Text, QColor('green'))
+		#p.setColor(QPalette.Base, QColor('black'))
+		p.setColor(QPalette.Base, QColor('#000'))
+		self.setPalette(p)
+		self.setFont(f)
+
+
+	def set_up_widget(self):
+		""" initialize table view
+		"""
+		
+		self.setEditTriggers(QAbstractItemView.NoEditTriggers);
+		self.setSelectionBehavior(QAbstractItemView.SelectRows);
+		self.setSelectionMode(QAbstractItemView.SingleSelection);
+		self.verticalHeader().setVisible(False)
+		self.setShowGrid(False)
+
+		headers = ['Date/Time','Source','Destination','Protocol','Facility','Severity','Is Threat','Message']
+		self.setColumnCount(len(headers))
+		self.setColumnWidth(0, 150)
+		self.setColumnWidth(1, 150)
+		self.setColumnWidth(2, 150)
+		self.setColumnWidth(5, 100)
+		self.setColumnWidth(5, 100)
+		self.setColumnWidth(7, 150)
+		self.setHorizontalHeaderLabels(headers)
+
 		self.style()
-		self.setVisible(True)
+
+	@pyqtSlot(dict)
+	def add_to_logs(self, msg):
+		""" a new message (has been processed already)
+		"""
+
+		self.setRowCount(self.__cnt + 1)
+
+		self.setItem(self.__cnt, 0, QTableWidgetItem(msg['time']))
+		self.setItem(self.__cnt, 1, QTableWidgetItem(msg['src']))
+		self.setItem(self.__cnt, 2, QTableWidgetItem(msg['dest']))
+		self.setItem(self.__cnt, 3, QTableWidgetItem(msg['proto']))
+		self.setItem(self.__cnt, 4, QTableWidgetItem(msg['facility']))
+		self.setItem(self.__cnt, 5, QTableWidgetItem(msg['severity']))
+		self.setItem(self.__cnt, 6, QTableWidgetItem(msg['is_threat']))
+		self.setItem(self.__cnt, 7, QTableWidgetItem(msg['msg']))
+
+		# increment count
+		self.__cnt += 1
+
+		if msg['is_threat']:
+			self.new_alert.emit(msg['src'].strip().split(':')[0])
+		
+
+
+class Hosts(QSplitter):
+	""" display blacklisted and hostile hosts
+	"""
+
+	mac_resolved = pyqtSignal(int, 'QString')
+
+	def __init__(self):
+		super(Hosts, self).__init__(Qt.Vertical)
+
+
+	def style(self):
+		"""
+		style the view
+		"""
+		
+		p = QPalette()
+		p.setColor(QPalette.Text, QColor(0, 255, 255))
+		#p.setColor(QPalette.Base, QColor('black'))
+		p.setColor(QPalette.Base, QColor('#333'))
+		self.setPalette(p)
+		#self.setFont(f)
+
+
+	def set_up_widget(self):
+
+		self.set_up_hostile_hosts_table()
+		self.set_up_blacklisted_hosts_table()
+
+		self.setSizes([500, 500])
+		self.style()
+		#self.setContentsMargins(10, 0, 0, 0)
+		
+
+	def set_up_blacklisted_hosts_table(self):
+		""" display all blacklisted hosts
+		"""
+		
+		self.__gb1      = QGroupBox('   Black List   ')
+		self.__bl_table = QTableWidget()
+		self.__bl_table.setEditTriggers(QAbstractItemView.NoEditTriggers);
+		self.__bl_table.setSelectionBehavior(QAbstractItemView.SelectRows);
+		self.__bl_table.setSelectionMode(QAbstractItemView.SingleSelection);
+		self.__bl_table.verticalHeader().setVisible(False)
+		self.__bl_table.setShowGrid(False)
+		self.__bl_table.setColumnCount(1)
+
+		self.__bl_table.setHorizontalHeaderLabels(['MAC Address'])
+		self.__bl_table.setColumnWidth(0, 400)
+
+		# button
+		self.__rmv   = QPushButton('Remove')
+		self.__rmv.setEnabled(False)
+		self.__rmv.clicked.connect(self.rm_from_blacklist)
+
+		# layout managers
+		self.__bl_main_ly = QVBoxLayout(self.__gb1)
+		self.__bl_bttm_ly = QHBoxLayout()
+		self.__bl_bttm_ly.addWidget(self.__rmv)
+		self.__bl_bttm_ly.addStretch()
+		self.__bl_main_ly.addWidget(self.__bl_table)
+		self.__bl_main_ly.addLayout(self.__bl_bttm_ly)
+
+		self.__bl_table.currentCellChanged.connect(self.set_rm_active)
+		self.addWidget(self.__gb1)
+
+
+	def set_up_hostile_hosts_table(self):
+		""" display all hostile hosts
+		"""
+		
+		self.__gb2      = QGroupBox('   Hostile Hosts   ')
+		self.__hh_table = QTableWidget()
+		self.__hh_table.setEditTriggers(QAbstractItemView.NoEditTriggers);
+		self.__hh_table.setSelectionBehavior(QAbstractItemView.SelectRows);
+		self.__hh_table.setSelectionMode(QAbstractItemView.SingleSelection);
+		self.__hh_table.verticalHeader().setVisible(False)
+		self.__hh_table.setShowGrid(False)
+		self.__hh_table.setColumnCount(3)
+
+		self.__hh_table.setHorizontalHeaderLabels(['IP Address', 'MAC Address', 'Messages'])
+
+		for i in range(3):
+			self.__hh_table.setColumnWidth(i, 150)
+
+		# buttons
+		self.__add_to_bl   = QPushButton('Blacklist')
+		self.__deauth      = QPushButton('Deauthenticate')
+		self.__add_to_bl.setEnabled(False)
+		self.__deauth.setEnabled(False)
+		self.__add_to_bl.clicked.connect(self.add_to_blacklist)
+		self.__deauth.clicked.connect(self.rm_from_network)
+
+		# layout managers
+		self.__hh_main_ly = QVBoxLayout(self.__gb2)
+		self.__hh_bttm_ly = QHBoxLayout()
+		self.__hh_bttm_ly.addWidget(self.__add_to_bl)
+		self.__hh_bttm_ly.addWidget(self.__deauth)
+		self.__hh_bttm_ly.addStretch()
+		self.__hh_main_ly.addWidget(self.__hh_table)
+		self.__hh_main_ly.addLayout(self.__hh_bttm_ly)
+
+		self.__hh_table.currentCellChanged.connect(self.set_death_bl_active)
+		self.mac_resolved.connect(self.set_mac_at)
+		self.addWidget(self.__gb2)
+
+
+	def exists(self, ip):
+
+		for i in range(self.__hh_table.rowCount()):
+			if self.__hh_table.item(i, 0).text() == ip:
+				return i
+
+		return -1
+
+
+	def icmp_probe(self, ip):
+		""" send ICMP packets, ping utility first sends ARP packets
+			in order to resolve IP's MAC address
+		"""
+
+		cmd = 'c:\\Windows\\System32\\ping %s -n 3' % ip
+		p   = Popen(cmd, shell=True, stdin=PIPE, stderr=PIPE, stdout=PIPE)
+		res = p.stdout.read()
+
+		res = res.decode()
+		if len(p.stderr.read()) == 0:
+			if 'Destination host unreachable' in res:
+				return False
+			return True
+		else:
+			return False
+
+
+	def resolv_mac(self, row, ip):
+		""" get MAC from the ARP cache
+		"""
+
+		self.icmp_probe(ip)
+
+		cmd = 'c:\\Windows\\System32\\arp -a %s' % ip
+		p   = Popen(cmd, shell=True, stdin=PIPE, stderr=PIPE, stdout=PIPE)
+		res = p.stdout.read()
+
+		res = res.decode().strip('\r\n')
+
+		mac = ''
+		if 'No ARP' not in res:
+			res = res.strip('\r\n').replace('\r', '').split('\n')[-1:][0].strip(' ').split(' ')
+			fine = []
+			for i in res:
+				if len(i) > 5:
+					fine.append(i)
+			mac = (fine[1] if (len(fine) == 3) else 'unknown')
+			
+		else:
+			mac = 'unknown'
+
+		self.mac_resolved.emit(row, mac)
+
+
+	@pyqtSlot(int, 'QString')
+	def set_mac_at(self, row, mac):
+		""" set mac address at (row, 1)
+		"""
+		self.__hh_table.item(row, 1).setText(mac)
+
+
+	@pyqtSlot('QString')
+	def new_alert(self, ip):
+		""" notification about a new alert
+		"""
+
+		index = self.exists(ip)
+
+		if index >= 0:
+			# increment count
+			item = self.__hh_table.item(index, 2)
+			item.setText(str(int(item.text()) + 1))
+
+		else:
+
+			# add to list
+			self.__hh_table.setRowCount(self.__hh_table.rowCount() + 1)
+			self.__hh_table.setItem(self.__hh_table.rowCount() - 1, 0, QTableWidgetItem(ip))
+			self.__hh_table.setItem(self.__hh_table.rowCount() - 1, 1, QTableWidgetItem('resolving ...'))
+			self.__hh_table.setItem(self.__hh_table.rowCount() - 1, 2, QTableWidgetItem(str(1)))
+
+			worker = threading.Thread(target=self.resolv_mac, args=(self.__hh_table.rowCount() - 1, ip))
+			worker.setDaemon(True)
+			worker.start()
+
+
+	@pyqtSlot(int, int, int, int)
+	def set_death_bl_active(self, cr, cc, pr, pc):
+
+		if not self.__deauth.isEnabled() and not self.__add_to_bl.isEnabled():
+			if cr >= 0:
+				self.__add_to_bl.setEnabled(True)
+				self.__deauth.setEnabled(True)
+		else:
+			if cr < 0:
+				self.__rmv.setEnabled(False)
+
+
+	@pyqtSlot(int, int, int, int)
+	def set_rm_active(self, cr, cc, pr, pc):
+
+		if not self.__rmv.isEnabled():
+			if cr >= 0:
+				self.__rmv.setEnabled(True)
+		else:
+			if cr < 0:
+				self.__rmv.setEnabled(False)
+
+
+	@pyqtSlot()
+	def add_to_blacklist(self):
+		""" add mac address to black list
+		"""
+		
+		# get mac
+		row = self.__hh_table.currentRow()
+		mac = self.__hh_table.item(row, 1).text()
+
+		if mac == 'unknown':
+			qmb = QMessageBox(self)
+			qmb.setText('Cannot add machine to black list. Could not resolve MAC address')
+			qmb.setWindowTitle('Snort Log Server')
+			qmb.setWindowIcon(QIcon('icons\\app.png'))
+			qmb.exec()
+
+		else:
+			ssh_client = SshClientWidget(mac, 1)
+			ssh_client.set_up_ssh_client_widget()
+			ssh_client.start_ssh_client_worker()
+
+			ssh_client.exec()
+
+
+	@pyqtSlot()
+	def rm_from_network(self):
+		""" deassociate a machine
+		"""
+		# get mac
+		row = self.__hh_table.currentRow()
+		mac = self.__hh_table.item(row, 1).text()
+
+		if mac == 'unknown':
+			qmb = QMessageBox()
+			qmb.setText('Cannot remove machine from the network. Could not resolve MAC address')
+			qmb.setWindowTitle('Snort Log Server')
+			qmb.setWindowIcon(QIcon('icons\\app.png'))
+			qmb.exec()
+
+		else:
+			ssh_client = SshClientWidget(mac, 0)
+			ssh_client.set_up_ssh_client_widget()
+			ssh_client.start_ssh_client_worker()
+
+			ssh_client.exec()
+
+
+	@pyqtSlot()
+	def rm_from_blacklist(self):
+		""" remove a machine from black list
+		"""
+		# get mac
+		row = self.__bl_table.currentRow()
+		mac = self.__bl_table.item(row, 0).text()
+
+		ssh_client = SshClientWidget(mac, 2)
+		ssh_client.set_up_ssh_client_widget()
+		ssh_client.start_ssh_client_worker()
+
+		ssh_client.exec()
+
+
+
+
+class MainWindow(QMainWindow):
+	""" Main window
+	"""
+
+	def __init__(self):
+		""" constructor
+		"""
+		super(MainWindow, self).__init__()
+		self.setWindowTitle('Snort Log Server')
+		self.setWindowIcon(QIcon('icons/app.png'))
+		self.setContentsMargins(0, 7, 0, 0)
+		self.setGeometry(100, 50, 1200, 600)
+
+
+	def closeEvent(self, event):
+		""" customize how closing the window is handled
+		"""
+
+		event.ignore()
+		self.hide()
+		self.__sys_tray_icon.show()
+
 
 	def style(self):
 		"""
@@ -83,1005 +454,182 @@ class MainView(QMainWindow):
 		self.setPalette(p)
 		self.setFont(f)
 
-	def initHostileHostsView(self):
-		self.__hhview.initView()
-		self.__sys_tray_icon.setHHVVisible.connect(self.__hhview.showHHView)
-		self.newHostileMsg_MW.connect(self.__hhview.addToHostileQueue_HHV)
-		self.__hhview.newHostileAlert.connect(self.__sys_tray_icon.alert_STI)
-		self.__show_hostile.triggered.connect(self.__hhview.show)
 
-	def initSysTray(self):
+	def set_up_ui(self):
+
+		self.create_menu_bar()
+		self.create_center_widget()
+		self.create_status_bar()
+		self.create_system_tray_icon()
+		self.style()
+
+
+	def create_system_tray_icon(self):
+		""" Create and an icon to the system tray
 		"""
-		initialize system tray parameters
+		self.__sys_tray_icon = SystemTrayIcon()
+		self.__sys_tray_icon.setVisible(False)
+		self.__sys_tray_icon.show_app.connect(self.show)
+		self.__sys_tray_icon.close_app.connect(self.exit_app)
+
+
+
+	def create_menu_bar(self):
+		""" set up the menu bar
 		"""
-		self.__sys_tray_icon.initIcon()
-		#connections
-		self.__sys_tray_icon.exited.connect(self.stopServer)
-		self.__sys_tray_icon.setHomeVisible.connect(self.showHome)
-		#self.__sys_tray_icon.attacksClicked.connect()
-		self.__sys_tray_icon.activated.connect(self.trayIconActivated)
+
+		# menus
+		self.__app_menu = QMenu('App')
+		# actions
+		self.__clr_logs = QAction('Clear Logs')
+		self.__quit     = QAction('Quit')
+		self.__hide     = QAction('Hide')
+
+		self.__quit.triggered.connect(self.exit_app)
+		self.__hide.triggered.connect(self.set_visible)
+
+		self.__app_menu.addActions([self.__clr_logs, self.__hide, self.__quit])
+		self.menuBar().addMenu(self.__app_menu)
 
 
-	#re-implement this method to control how close is handled
-	def closeEvent(self, event):
-		event.ignore()
-		self.__to_tray_action.triggered.emit()
-		
-
-	def createMenuBar(self):
+	def create_center_widget(self):
+		""" initialize and set a widget at the center of the app
 		"""
-		create the menu bar
-		"""
-		self.__view_menu.addAction(self.__to_tray_action)
-		self.__view_menu.addAction(self.__clr_logs_action)
-		self.__view_menu.addAction(self.__exit_action)
-		self.__view_menu.addAction(self.__show_hostile)
-		self.__view_menu.addAction(self.__settings)
+		self.__splitter = QSplitter(Qt.Horizontal)
+		self.__logs     = Logs()
+		self.__logs.set_up_widget()
+		self.__hosts    = Hosts()
+		self.__hosts.set_up_widget()
 
-		#connections (SIGNAL <--> SLOT)
-		self.__exit_action.triggered.connect(self.stopServer)
-		self.__to_tray_action.triggered.connect(self.showHome)
-		self.__settings.triggered.connect(self.showSettings)
+		self.__logs.new_alert.connect(self.__hosts.new_alert)
 
-	@pyqtSlot()
-	def showSettings(self):
-		"""
-		display settings, modify settings
-		"""
-		el   = QEventLoop()
-		sett = Configs()
-		sett.exit.connect(el.exit)
-		sett.show()
-		el.exec()
+		self.__gb  = QGroupBox("   Snort Log Messages   ")
+		self.__bly = QVBoxLayout(self.__gb)
+		self.__bly.addWidget(self.__logs)
+
+		self.__splitter.addWidget(self.__gb)
+		self.__splitter.addWidget(self.__hosts)
+		self.__splitter.setSizes([700, 400])
+
+		self.__splitter.setContentsMargins(15, 25, 15, 30)
+		self.setCentralWidget(self.__splitter)
 
 
-	def createCenterWidget(self):
-		"""
-		create and add a center widget
-		"""
-		self.__cv = CenterView()
-		self.__cv.initCenter()
-		self.setCentralWidget(self.__cv)
-
-		#connect CenterView's add() to a signal
-		self.msgProcessed.connect(self.__cv.addLog_CV)
-		self.__clr_logs_action.triggered.connect(self.__cv.clearLogs_CV)
-
-	def createStatusBar(self):
-		"""
-		create and add the status bar
+	def create_status_bar(self):
+		""" create the status bar
 		"""
 		self.__status_bar = self.statusBar()
-		self.updateStatusBar.connect(self.__status_bar.showMessage)
 
 
-	def process(self):
+	@pyqtSlot()
+	def exit_app(self):
+		""" close application
 		"""
-		process snort messages
-		"""
-		while True:
-			# read a message from Net.LogUtils.__in_queue
-			msgStr = Net.LogUtils.getFromInQueue()
-			msgObj = Net.LogUtils.parseMsg(msgStr)
-			#emit signal
-			self.msgProcessed.emit(msgObj)
-			self.updateStatusBar.emit(msgObj.__str__())
-			if msgObj.isThreat():
-				self.newHostileMsg_MW.emit(msgObj[1])
-
-	def startServer(self):
-		"""
-		start the log server
-		"""
-		self.__socket = QUdpSocket()
-		self.__socket.bind(QHostAddress.LocalHost,514)
-		#connect readReady to a method that can read dgrams from the socket
-		self.__socket.readyRead.connect(self.readDgram)
-		#use different thread to do processing
-		prcssr = threading.Thread(target=self.process)
-		prcssr.setDaemon(True)
-		prcssr.start()
-
-	#@pyqtSlot()
-	def stopServer(self):
-		"""
-		stop the log server
-		"""
-		#close socket
 		butt = QMessageBox.question(self, 'Log Server',\
 				'Are you sure you want to shutdown this Log Server?')
 		if butt == QMessageBox.No:
 			pass
+
 		else:
-			self.__socket.close()
+			self.__logs.stop_server.emit()
 			self.__sys_tray_icon.setVisible(False)
-			#self.__hhview.close()
+
+			#time.sleep(3)
 			sys.exit()
 
-	# SLOTS
-	@pyqtSlot()
-	def readDgram(self):
-		try:
-			dgram = self.__socket.receiveDatagram()
-			dgram = (dgram.data().data()).decode('utf-8')
-			if dgram.startswith('<'):
-				p = dgram.find('>')
-				dgram = dgram[(p + 1):]
-			#add to queue
-			Net.LogUtils.addToInQueue(dgram)
-		except:
-			pass
-
-	@pyqtSlot(QSystemTrayIcon.ActivationReason)
-	def trayIconActivated(self, reason):
-		"""
-		handle tray icon activation event
-		"""
-		if reason == QSystemTrayIcon.Trigger:
-			if not self.isVisible():
-				self.showHome(True)
-			else:
-				self.showHome(False)
-
-	@pyqtSlot(bool)
-	def showHome(self, boolVal=False):
-		if boolVal:
-			if not self.isVisible():
-				#set visible
-				self.show()
-				#disable maximize
-				self.__sys_tray_icon.setMaxEnabled(False)
-				#enable minimize
-				self.__sys_tray_icon.setMinEnabled(True)
-			else:
-				pass
-		else:
-			if self.isVisible():
-				#hide
-				self.hide()
-				#enable maximize
-				self.__sys_tray_icon.setMaxEnabled(True)
-				#disable minimize
-				self.__sys_tray_icon.setMinEnabled(False)
-			else:
-				pass
-
-
-#######################################################
-## Center Widget
-#######################################################
-class CenterView(QSplitter):
-	
-	logAdded_CV    = pyqtSignal(Net.Message)
-	logsCleared_CV = pyqtSignal()
-	def __init__(self): 
-		"""
-		constructor
-		"""
-		super(CenterView, self).__init__(Qt.Vertical)
-		self.__logs = LogsView()
-		self.__desc = MessageView()
-
-	def initCenter(self):
-		"""
-		initialize the center view
-		"""
-		self.__logs.initView()
-		self.addWidget(self.__logs)
-		self.addWidget(self.__desc)
-		#connections
-		self.logAdded_CV.connect(self.__logs.addLog_L)
-		self.logsCleared_CV.connect(self.__logs.clearLogs_L)
-		self.__logs.rowClicked.connect(self.__desc.updateMsgView)
-		self.setContentsMargins(20, 40, 20, 10)
-		self.style()
-
-	def style(self):
-		"""
-		style the logs view
-		"""
-		#self.__logs.setWindowIcon(QIcon('icons\\notf.png'))
-		p = QPalette()
-		p.setColor(QPalette.Text, QColor('green'))
-		#p.setColor(QPalette.Base, QColor('black'))
-		p.setColor(QPalette.Base, QColor('#000'))
-		self.setPalette(p)
-
-	@pyqtSlot(Net.Message)
-	def addLog_CV(self, msg):
-		self.logAdded_CV.emit(msg)
 
 	@pyqtSlot()
-	def clearLogs_CV(self):
-		self.logsCleared_CV.emit()
-
-
-#######################################################
-## Message View Class
-#######################################################
-class MessageView(QGroupBox):
-	#win = QWidget()
-	def __init__(self):
-		super(MessageView, self).__init__("  Message Description  ")
-		#self.__md = QLabel('wertyuiop[')
-		self.__ly = QVBoxLayout()
-		self.__ly.addWidget(QTreeWidget())
-		self.setLayout(self.__ly)	
-		self.setContentsMargins(15, 15, 15, 15)
-
-	@pyqtSlot(Net.Message)
-	def updateMsgView(self, msg):
-		#update message description form
-		#print('Here')
-		self.__ly.takeAt(0)
-		self.__ly.addWidget(MessageView.getView(msg))
-
-	@staticmethod
-	def getView(msg):
-		# a tree widget
-		lbls = [('Date','Date and Time'), ('Src','Packet Source'), ('Dest','Packet Destination'), ('Proto','Packet Protocol'), \
-				('Fac','Facility'), ('Sev','Severity'), ('Threat ?', 'Is_Threat'),(['Error Msg', 'Classification', 'Priority'], \
-					'Snort Message Description')]
-		tree = QTreeWidget()
-		lst = []
-		for i in range(len(lbls)):
-			prnt = QTreeWidgetItem()
-			prnt.setText(0, lbls[i][1])
-			if i == 7:
-				m = msg[7]
-				for j in range(len(m)):
-					ch = QTreeWidgetItem()
-					ch.setText(0, lbls[i][0][j].ljust(20,'.') + m[j].rjust(50,'.'))
-					prnt.addChild(ch)
-			else:
-				ch = QTreeWidgetItem()
-				ch.setText(0, lbls[i][0].ljust(20,'.') + msg[i].rjust(50,'.'))
-				prnt.addChild(ch)
-			# add item to list
-			lst.append(prnt)
-
-		tree.addTopLevelItems(lst)
-		tree.expandAll()
-		return tree
-
-
-#######################################################
-## Logs View
-#######################################################
-class LogsView(QGroupBox):
-
-	rowClicked = pyqtSignal(Net.Message)
-	def __init__(self):
+	def set_visible(self):
+		""" hide main window, show tray icon
 		"""
-		constructor
+		self.hide()
+		self.__sys_tray_icon.setVisible(True)
+
+
+
+class SshClientWidget(QDialog):
+	""" display the progress of an ssh connection
+	"""
+
+	close_ssh_connection = pyqtSignal()
+	# host, port, user, pwd
+	connect_to_ssh_server = pyqtSignal('QString', int, 'QString', 'QString')
+	execute_cmd = pyqtSignal('QString')
+
+	def __init__(self, mac, action):
+		super(SshClientWidget, self).__init__()
+
+		self.__mac = mac
+		self.__act = action
+
+		self.setWindowTitle('SSH Client')
+		self.setWindowIcon(QIcon('icons/app.png'))
+		self.setFixedSize(600, 500)
+
+
+	def closeEvent(self, event):
+		""" close ssh connection
 		"""
-		super(LogsView, self).__init__("  Snort Log Messages  ")
-		self.__c = 0
-		self.__tb = QTableWidget()		
-		self.__ly = QVBoxLayout()
-		#connections
-		self.__tb.itemSelectionChanged.connect(self.focusedRow)
-		self.setContentsMargins(15, 15, 15, 15)
 
-	def initView(self):
-		#self.__tb.setRowCount(10000)
-		self.__tb.setEditTriggers(QAbstractItemView.NoEditTriggers);
-		self.__tb.setSelectionBehavior(QAbstractItemView.SelectRows);
-		self.__tb.setSelectionMode(QAbstractItemView.SingleSelection);
-		self.__tb.verticalHeader().setVisible(False)
-		self.__tb.setShowGrid(False)
-
-		headers = ['Date_Time','Source','Destination','Protocol','Facility','Severity','Is Threat','Message']
-		self.__tb.setColumnCount(len(headers))
-		self.__tb.setColumnWidth(0, 200)
-		self.__tb.setColumnWidth(1, 200)
-		self.__tb.setColumnWidth(2, 200)
-		self.__tb.setColumnWidth(5, 100)
-		self.__tb.setColumnWidth(5, 100)
-		self.__tb.setColumnWidth(7, 200)	
-		self.__tb.setHorizontalHeaderLabels(headers)
-		self.__ly.addWidget(self.__tb)
-		self.setLayout(self.__ly)
-
-	#style view
-	def style(self):
-		pass
-
-	# SLOTS
-	@pyqtSlot(Net.Message)
-	def addLog_L(self, msg):
-		#print('$$ ADDED $$')
-		self.__tb.setRowCount(self.__c + 1)
-		for i in range(8):
-			if i == 7:
-				self.__tb.setItem(self.__c, i, QTableWidgetItem(msg[i][0]))
-			else:
-				self.__tb.setItem(self.__c, i, QTableWidgetItem(msg[i]))
-
-		self.__c += 1
-		Net.LogUtils.addToList(msg)
-
-	@pyqtSlot()
-	def clearLogs_L(self):
-		self.__tb.clearContents()
-		self.__c = 0
-		# clear list
-		Net.LogUtils.clearList()
-
-	@pyqtSlot()
-	def focusedRow(self):
-		row = self.__tb.currentRow()
-		if self.__c != 0:
-			self.rowClicked.emit(Net.LogUtils.getMsgFromList(row))
-
-
-
-##########################################################
-## System Tray Icon
-##########################################################
-class SystemTrayIcon(QSystemTrayIcon):
-
-	exited         = pyqtSignal()
-	setHomeVisible = pyqtSignal(bool)
-	setHHVVisible  = pyqtSignal()
-
-	def __init__(self):
-		"""
-		constructor
-		"""
-		super(SystemTrayIcon, self).__init__(QIcon('icons/app.png'))
-		#context menu
-		self.__menu    = QMenu()
-		self.__exit    = QAction('Quit')
-		self.__attacks = QAction('Hostile Hosts')
-		self.__max     = QAction('Show Main')
-		self.__min     = QAction('Hide Main')
-		#self.__stats   = QAction('Statistics')
-
-	def initIcon(self):
-		#set visible
-		#add actions
-		self.__menu.addAction(self.__exit)
-		self.__menu.addAction(self.__attacks)
-		self.__menu.addAction(self.__max)
-		self.__menu.addAction(self.__min)
-		#self.__menu.addAction(self.__stats)
-		self.style()
-		self.setContextMenu(self.__menu)
-		self.show()
-
-		#set defaults
-		self.__max.setEnabled(False)
-		self.setToolTip('Mr. Rop Log Server')
-
-		#connections
-		self.__exit.triggered.connect(self.exit)
-		self.__attacks.triggered.connect(self.showHHosts)
-		self.__max.triggered.connect(self.maximize)
-		self.__min.triggered.connect(self.minimize)
-		# style
-		
-
-	def style(self):
-		"""
-		style
-		"""
-		self.__menu.setStyleSheet('QMenu.item { background-color: #444; }')
-
-	@pyqtSlot('QString')
-	def alert_STI(self, msg):
-		self.showMessage('Logs', msg, QSystemTrayIcon.Warning)
-
-	def setMinEnabled(self, boolVal):
-		self.__min.setEnabled(boolVal)
-
-	def setMaxEnabled(self, boolVal):
-		self.__max.setEnabled(boolVal)
-
-
-	# SLOTS
-	@pyqtSlot()
-	def exit(self):
-		self.exited.emit()
-
-	@pyqtSlot()
-	def maximize(self):
-		self.setHomeVisible.emit(True)
-
-	@pyqtSlot()
-	def minimize(self):
-		self.setHomeVisible.emit(False)
-
-	@pyqtSlot()
-	def showHHosts(self):
-		self.setHHVVisible.emit()
-
-
-
-#########################################################
-## A view to show all sources of attacks
-#########################################################
-class HostileHostsView(QSplitter):
-
-	# new hostile host
-	# newHostileHost_HHV        = pyqtSignal('QString')
-	newHostileAlert = pyqtSignal('QString')
-	def __init__(self):
-		"""
-		constructor
-		"""
-		super(HostileHostsView, self).__init__(Qt.Vertical)
-		#variables
-		self.__c           = 0
-		self.__hhosts      = Net.HostileHosts()
-		#self.__notf        = Notifications()
-		self.__list        = QTableWidget()
-		#self.__dlt         = QPushButton('Delete')
-		# actions
-		self.__deauth      = QPushButton('Deauthenticate')
-		self.__add_to_bl   = QPushButton('Blacklist')
-		self.__deauth.setEnabled(False)
-		self.__add_to_bl.setEnabled(False)
-		#connections
-
-		# blacklisted hosts
-		self.__bl, self.__cb = HostileHostsView.getBlackListView()
-		self.__rm = QPushButton('Remove')
-		self.__rm.setEnabled(False)
-		self.__rm.setToolTip('Remove host from black list')
-		self.__hhosts.newHostileHost_HH.connect(self.addToHostileView)
-		self.__add_to_bl.clicked.connect(self.blacklist)
-		self.__deauth.clicked.connect(self.deauthenticate)
-		self.__rm.clicked.connect(self.unblacklist)
-		self.__list.itemSelectionChanged.connect(self.enableButtons)
-		self.__bl.itemSelectionChanged.connect(self.enableRm)
-		self.setWindowIcon(QIcon('icons/attacks.png'))
-		self.setWindowTitle('-- Hostile Hosts --')
-
-
-	@pyqtSlot()
-	def enableButtons(self):
-		#self.__act.setEnabled(True)
-		#self.__dlt.setEnabled(True)
-		if self.__list.currentRow() != -1:
-			if not self.__deauth.isEnabled():
-				self.__deauth.setEnabled(True)
-				self.__add_to_bl.setEnabled(True)
-			else:
-				pass
-		else:
-			self.__deauth.setEnabled(False)
-			self.__add_to_bl.setEnabled(False)
-
-	@pyqtSlot()
-	def enableRm(self):
-		if self.__bl.currentRow() != -1:
-			if not self.__rm.isEnabled():
-				self.__rm.setEnabled(True)
-			else:
-				pass
-		else:
-			self.__rm.setEnabled(False)
-
-
-	def initView(self):
-		# hostile list
-		hdrs = ['Ip Address', 'MAC Address', '# of messages']
-		self.__list.setColumnCount(len(hdrs))
-		self.__list.setColumnWidth(0,200)
-		self.__list.setColumnWidth(1,200)
-		self.__list.setColumnWidth(2,150)
-		self.__list.setHorizontalHeaderLabels(hdrs)
-		self.__list.setEditTriggers(QAbstractItemView.NoEditTriggers);
-		self.__list.setSelectionBehavior(QAbstractItemView.SelectRows);
-		self.__list.setSelectionMode(QAbstractItemView.SingleSelection);
-		self.__list.verticalHeader().setVisible(False)
-		self.__list.setShowGrid(True);
-		# right-center the view 
-		y       = (MainView.dH/2) - 200
-		x       = (MainView.dW - 600)
-		self.setGeometry(x, y, 600, 400)
-
-		self.finish()
-		self.style()
-		# initialize notifications interface
-		#self.__notf.initView()
-		#style
-		self.setContentsMargins(15, 15, 15, 15)
-		#self.setWindowFlags(Qt.FramelessWindowHint)
-
-	def style(self):
-		"""
-		style the view
-		"""
-		f = QFont('Lucida Console, Courier, monospace')
-		#f.setBold(True)
-		p = QPalette()
-		p.setColor(QPalette.Text, QColor('green'))
-		#p.setColor(QPalette.Base, QColor('black'))
-		p.setColor(QPalette.Base, QColor('#000'))
-		self.setPalette(p)
-		self.setFont(f)
-
-	def finish(self):
-		# main layout
-		#mainly = QVBoxLayout()
-		g1 = QGroupBox('Hostile')
-		g2 = QGroupBox('Blacklist')
-		# black list  layout
-		blly   = QVBoxLayout()
-		rmly   = QHBoxLayout()
-		rmly.addWidget(self.__rm)
-		rmly.addStretch()
-		blly.addLayout(rmly)
-		blly.addWidget(self.__bl)
-		g2.setLayout(blly)
-
-		# hostile list layout
-		hlly   = QVBoxLayout()
-		btnsly = QHBoxLayout()
-		btnsly.addWidget(self.__deauth)
-		btnsly.addWidget(self.__add_to_bl)
-		btnsly.addStretch()
-		hlly.addLayout(btnsly)
-		hlly.addWidget(self.__list)
-		g1.setLayout(hlly)
-
-		###
-		self.addWidget(g1)
-		self.addWidget(g2)
-
-	# SLOTS
-	@pyqtSlot(Net.Host)
-	def addToHostileView(self, host):
-		self.__list.setRowCount(self.__c + 1)
-		#add to list
-		self.__list.setItem(self.__c, 0, host.ip)
-		self.__list.setItem(self.__c, 1, host.mac)
-		self.__list.setItem(self.__c, 2, host.count)
-			
-		self.__c += 1
-		#notify sys admin
-		self.notify()
-
-	@pyqtSlot()
-	def showHHView(self):
-		if not self.isVisible():
-			self.setVisible(True)
-
-	@pyqtSlot('QString')
-	def addToHostileQueue_HHV(self, src):
-		#print("ADDED")
-		self.__hhosts.addToHostileQueue_HH(src)
-
-	#@pyqtSlot('QString')
-	def notify(self):
-		butt = QMessageBox.question(self, 'Hey Sir! you have a new hostile host',\
-			'Would you like to view the host\'s information?')
+		butt = QMessageBox.question(self,'SSH Client', 'Are you sure you want to close this window?')
 
 		if butt == QMessageBox.Yes:
-				self.showHHView()
+			self.close_ssh_connection.emit()
+
 		else:
-			# send an alert
-			self.newHostileAlert.emit('You have a new hostile host')
+			event.ignore()
 
 
-	def closeEvent(self, event):
-		self.hide()
-		event.ignore()
 
-
-	@pyqtSlot()
-	def deauthenticate(self):
+	def set_up_ssh_client_widget(self):
+		""" display controls
 		"""
-		deassociate a PC from an AP/switch
-		"""
-		if self.__list.selectedItems()[1].text() == 'Unknown':
-			QMessageBox.information(self, 'Ssh','The MAC address for %s has not been resolved yet' % \
-				 self.__list.selectedItems()[0].text())
-		else:
-			lp = QEventLoop()
-			ssh = SshConnView(self.__list.selectedItems()[1].text(), 'deauth')
-			ssh.deathSuccessful.connect(self.deauthenticated)
-			ssh.exited.connect(lp.exit)
-			ssh.failed.connect(self.error)
-			ssh.initView()
-			lp.exec()
 
-		self.__list.setCurrentCell(-1, -1)
+		self.__main_ly = QVBoxLayout(self)
+		self.__form_ly = QFormLayout()
+		self.__btn_ly = QHBoxLayout()
 
+		# input fields
+		self.__ip = QLineEdit()
+		self.__port = QLineEdit('22')
+		self.__username = QLineEdit()
+		self.__pwd = QLineEdit()
+		self.__conn_btn = QPushButton('connect')
+		self.__conn_btn.setEnabled(False)
+		self.__logs = QTextEdit()
 
-	@pyqtSlot()
-	def blacklist(self):
-		"""
-		add to black list
-		"""
-		if self.__list.selectedItems()[1].text() == 'Unknown':
-			QMessageBox.information(self, 'Ssh','The MAC address for %s has not been resolved yet' % \
-				 self.__list.selectedItems()[0].text())
-		else:
-			lp = QEventLoop()
-			ssh = SshConnView(self.__list.selectedItems()[1].text(), 'add')
-			ssh.addSuccessful.connect(self.addToBL)
-			ssh.exited.connect(lp.exit)
-			ssh.failed.connect(self.error)
-			ssh.initView()
-			lp.exec()
+		# place holders
+		self.__ip.setPlaceholderText('Ip address')
+		self.__port.setPlaceholderText('Port No. (1 - 65535)')
+		self.__username.setPlaceholderText('SSH account username')
+		self.__pwd.setPlaceholderText('SSH acount password')
+		self.__pwd.setEchoMode(QLineEdit.Password)
 
+		# signal -- slot connections
+		self.__conn_btn.clicked.connect(self.connect_to_server)
+		self.__ip.textChanged.connect(self.validate)
+		self.__port.textChanged.connect(self.validate)
+		self.__username.textChanged.connect(self.validate)
+		self.__pwd.textChanged.connect(self.validate)
 
-	@pyqtSlot()
-	def unblacklist(self):
-		"""
-		remove MAc address from black list
-		"""
-		lp = QEventLoop()
-		ssh = SshConnView(self.__bl.selectedItems()[0].text() , 'remove')
-		ssh.rmSuccessful.connect(self.rmFromBL)
-		ssh.exited.connect(lp.exit)
-		ssh.failed.connect(self.error)
-		ssh.initView()
-		lp.exec()
+		# add to layout
+		self.__form_ly.addRow(QLabel('SSH Ip'), self.__ip)
+		self.__form_ly.addRow(QLabel('SSH Port'), self.__port)
+		self.__form_ly.addRow(QLabel('User Name'), self.__username)
+		self.__form_ly.addRow(QLabel('Password'), self.__pwd)
 
+		self.__btn_ly.addWidget(self.__conn_btn)
+		self.__btn_ly.addStretch()
 
-	@pyqtSlot('QString', 'QString')
-	def addToBL(self, mac, gw):
-		# get list
-		all_macs = Configs.getBlackList()
+		self.__main_ly.addLayout(self.__form_ly)
+		self.__main_ly.addLayout(self.__btn_ly)
+		self.__main_ly.addWidget(self.__conn_btn)
 
-		if not all_macs:
-			all_macs = set()
-		if not (mac, gw) in all_macs:
-			# add to black list file
-			all_macs.add((mac, gw))
-			Configs.writeBlckList(all_macs)
-			self.__bl.setRowCount(self.__cb + 1)
-			self.__bl.setItem(self.__cb, 0, QTableWidgetItem(mac))
-			self.__bl.setItem(self.__cb, 1, QTableWidgetItem(gw))
-			self.__cb += 1
-			self.__list.setCurrentCell(-1, -1)
-		else:
-			QMessageBox.information(self, '-- error --', '%s is already in the blacklist' % mac)
-
-
-	@pyqtSlot('QString', 'QString')
-	def rmFromBL(self, mac, gw):
-		# get all blcklisted mac addresses
-		all_macs = Configs.getBlackList()
-		if all_macs:
-			try:
-				all_macs.remove((mac, gw))
-				# remove from the view
-				for i in range(self.__cb):
-					if mac == self.__bl.item(i, 0).text():
-						self.__bl.removeRow(i)
-						self.__cb -= 1
-						self.__bl.setRowCount(self.__cb)
-			except:
-				pass
-			# update blacklisted list file
-			Configs.writeBlckList(all_macs)
-		self.__bl.setCurrentCell(-1, -1)
-
-
-	@pyqtSlot('QString', 'QString')
-	def error(self, host, action):
-		"""
-		Applying an action to a host failed
-		"""
-		err_msg = ('Adding %s to black list failed' % host) if(action == 'add') \
-						else ('Removing %s from the blacklist failed' % host) if(action == 'remove') \
-								else ('Deauthenticating %s failed' % host)
-		QMessageBox.critical(self, '-- error --', err_msg)
-
-
-	@pyqtSlot('QString', 'QString')
-	def deauthenticated(self, host, gw):
-		"""
-		display
-		"""
-		QMessageBox.information(self, '-- success --', '%s deauthenticated successfully' % host)
-
-
-
-	##########################
-	## utility methods
-	##########################
-	def getBlackListView():
-		bl = QTableWidget()
-		bl.setColumnCount(2)
-		bl.setColumnWidth(0, 250)
-		bl.setColumnWidth(1, 250)
-		bl.setHorizontalHeaderLabels(['MAC Address', 'Gateway IP'])
-		bl.setEditTriggers(QAbstractItemView.NoEditTriggers);
-		bl.setSelectionBehavior(QAbstractItemView.SelectRows);
-		bl.setSelectionMode(QAbstractItemView.SingleSelection);
-		bl.verticalHeader().setVisible(False)
-		bl.setShowGrid(False);
-
-		# get black list
-		l = Configs.getBlackList()
-		if not l:
-			return (bl, 0)
-
-		bl.setRowCount(len(l))
-		for index, data in enumerate(l):
-			bl.setItem(index, 0, QTableWidgetItem(data[0]))
-			bl.setItem(index, 1, QTableWidgetItem(data[1]))
-
-		return (bl, len(l))
-
-
-
-
-############################################################
-## SSH connection 
-############################################################
-class SshConnView(QWidget):
-	# close signal
-	exited          = pyqtSignal()
-	rmSuccessful    = pyqtSignal('QString', 'QString')
-	addSuccessful   = pyqtSignal('QString', 'QString')
-	deathSuccessful = pyqtSignal('QString', 'QString')
-	failed          = pyqtSignal('QString', 'QString')
-
-	def __init__(self, host, action):
-		super(SshConnView, self).__init__()
-		self.__u      = QLineEdit()
-		self.__p      = QLineEdit()
-		self.__choices, self.__gwip = SshConnView.getIpChoices()
-		self.__gwport = QLineEdit()
-		self.__c      = QPushButton('connect')
-		self.__bck    = QPushButton('Retry')
-		self.__h      = host
-		self.__a      = action
-		self.__conn   = paramiko.SSHClient()
-		self.__log    = QTextEdit()
-		# signal
-		self.__signal = self.rmSuccessful if(action == 'remove') else self.addSuccessful \
-								if(action == 'add') else self.deathSuccessful
-
-		# layouts
-		self.__ml = QVBoxLayout()
-		self.__data = QFrame()
-
-
-
-	def initView(self):
-		il = QFormLayout()
-		self.__c.setEnabled(False)
-		self.__log.setReadOnly(True)
-		
-		il.addRow('Network Gateway Ip', self.__gwip)
-		il.addRow('Network Gateway port', self.__gwport)
-		il.addRow('SSH Server username', self.__u)
-		il.addRow('SSH Server password', self.__p)
-		il.addRow('', self.__c)
-		self.__p.setEchoMode(QLineEdit.Password)
-
-		#connections
-		self.__c.clicked.connect(self.cnnct)
-		self.__bck.clicked.connect(self.retry)
-		self.__u.textEdited.connect(self.validate)
-		self.__p.textEdited.connect(self.validate)
-		self.__gwip.currentTextChanged.connect(self.validate)
-		self.__gwip.editTextChanged.connect(self.validate)
-		self.__gwport.textEdited.connect(self.validate)
-		# window styles
-		self.setWindowIcon(QIcon('icons\\app.png'))
-		self.setWindowTitle('-- SSH_Client --')
-		self.setMinimumSize(400, 500)
-		#self.__il.addStretch()
-		self.__data.setLayout(il)
-		self.__ml.addWidget(self.__data)
-		self.__ml.addWidget(self.__bck)
-		self.__bck.setVisible(False)
-		self.__ml.addWidget(self.__log)
-		self.setLayout(self.__ml)
 		self.style()
-		self.show()
-		#self.exec_()
-
-	def style(self):
-		"""
-		style the view
-		"""
-		f = QFont('Lucida Console, Courier, monospace')
-		#f.setBold(True)
-		p = QPalette()
-		p.setColor(QPalette.Window, QColor('#ddd'))
-		p.setColor(QPalette.WindowText, QColor('black'))
-		
-		#p.setColor(QPalette.)
-		self.setPalette(p)
-		self.setFont(f)
-
-
-	@pyqtSlot('QString')
-	def validate(self, txt):
-		# fill using present data
-		if self.__choices.get(self.__gwip.currentText()):
-			self.__u.setText(self.__choices[self.__gwip.currentText()]['user'])
-			self.__p.setText(self.__choices[self.__gwip.currentText()]['pwd'])
-			self.__gwport.setText(self.__choices[self.__gwip.currentText()]['port'])
-			self.__c.setEnabled(True)
-
-		else:
-			self.__u.clear()
-			#self.__gwip.setCurrentIndex(0)
-			self.__gwport.clear()
-			self.__p.clear()
-			#self.__log.clear()
-			self.__c.setEnabled(False)
-
-	@pyqtSlot()
-	def cnnct(self):
-		#SshConnView.action_res = (True, self.__h)
-		# create a connection first
-		self.__data.setVisible(False)
-		self.__bck.setVisible(True)
-		#sleep(2)
-		self.__conn = paramiko.SSHClient()
-		self.__conn.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-		try:
-			self.__log.append('Connecting to SSH server ... ')
-			self.__conn.connect(username=self.__u.text(), password=self.__p.text(), \
-				hostname=self.__gwip.currentText(), port=int(self.__gwport.text()))
-			#sleep(2)
-			self.__log.append('<span style="color:green;"><b>\tCONNECTED :)</b></span>')
-
-			# apply action
-
-		except Exception as ex:
-			#return ex
-			self.__log.append('<span style="color:red;font-family:Lucida Console, Courier, monospace;"> \
-				\tCONNECTION FAILED: </span> %s' % ex )
-			self.failed.emit(self.__h, self.__a)
-
-		#emit signal
-		self.__signal.emit(self.__h, self.__gwip.currentText())
-
-	@pyqtSlot()
-	def retry(self):
-		self.__u.clear()
-		self.__gwip.setCurrentIndex(0)
-		self.__gwport.clear()
-		self.__p.clear()
-		self.__log.clear()
-		self.__c.setEnabled(False)
-		# swap views
-		self.__data.setVisible(True)
-		self.__bck.setVisible(False)
-
-
-	def execute(self, cmds):
-		for cmd in cmds:
-			pass
-
-	def closeEvent(self, event):
-		if self.__conn:
-			self.__conn.close()
-		self.exited.emit()
-
-
-	#############################
-	## Utility methods
-	#############################
-	@staticmethod
-	def getIpChoices():
-		c = QComboBox()
-		#c.setEditable(True)
-		c.addItem('-- select or enter IP --')
-		data = Configs.getSettingsData()
-		if len(data) > 0:
-			c.addItems(list(data.keys()))
-
-		return (data, c)
-
-
-	@staticmethod
-	def getCmd(action):
-		cmds = {
-			'remove':'',
-			'add':'',
-			'deauth':''
-		}
-
-		return cmds[action]
-
-
-
-
-
-############################################################
-## display and modify settings
-############################################################
-class Configs(QWidget):
-	"""
-	settings ==> gateways, usernames and passwords
-	"""
-	exit = pyqtSignal()
-
-	def __init__(self):
-		super(Configs, self).__init__()
-		# init stuff
-		self.setWindowTitle('-- settings --')
-		self.setWindowIcon(QIcon('icons/settings.png'))
-		self.setMinimumSize(650, 400)
-		self.initView()
-		self.style()
-
-	def initView(self):
-		self.__modif = False
-		gb = QGroupBox(' network gateways (SSH server connection infor) ')
-		outerly = QVBoxLayout()
-		innerly = QVBoxLayout()
-		btnsly  = QHBoxLayout()
-		# actions
-		self.__add = QPushButton('Add')
-		self.__rm  = QPushButton('Remove')
-		self.__rm.setEnabled(False)
-		btnsly.addWidget(self.__add)
-		btnsly.addWidget(self.__rm)
-		btnsly.addStretch()
-		innerly.addLayout(btnsly)
-		# table of networks and no. of networks
-		self.__nets, self.__c = Configs.getSettingsView()
-		innerly.addWidget(self.__nets)
-		gb.setLayout(innerly)
-		outerly.addWidget(gb)
-		self.setLayout(outerly)
-
-		# connections
-		self.__add.clicked.connect(self.addNewNetwork)
-		self.__rm.clicked.connect(self.removeNetwork)
-		self.__nets.itemSelectionChanged.connect(self.enableRm)
-		self.__nets.itemChanged.connect(self.setModified)
-
-	@pyqtSlot()
-	def enableRm(self):
-		if self.__nets.currentRow() != -1:
-			if not self.__rm.isEnabled():
-				self.__rm.setEnabled(True)
-			else:
-				pass
-		else:
-			self.__rm.setEnabled(False)
-
-	def closeEvent(self, event):
-		"""
-		save changes
-		"""
-		if self.__modif:
-			butt = QMessageBox.question(self,'Save changes?', \
-				'The settings have been modified, would you like to save changes before exiting?')
-			if butt == QMessageBox.Yes:
-				# get new settings
-				all_nets = {}
-				for i in range(self.__c):
-					item = self.__nets.item(i, 0)
-					if item and item.text():
-						# pack dictS
-						sett = {}
-						sett['port'] = self.__nets.item(i, 1).text()
-						sett['name'] = self.__nets.item(i, 2).text()
-						sett['user'] = self.__nets.item(i, 3).text()
-						sett['pwd']  = self.__nets.item(i, 4).text()
-
-						all_nets[item.text()] = sett
-				# time to save
-				#print(all_nets)
-				Configs.writeSettings(all_nets)
-			else:
-				pass
-		else:
-			pass
 
 
 	def style(self):
-		"""
-		style the view
-		"""
-		self.setContentsMargins(10, 15, 10 , 10)
+
 		f = QFont('Lucida Console, Courier, monospace')
 		#f.setBold(True)
 		p = QPalette()
@@ -1093,119 +641,76 @@ class Configs(QWidget):
 		self.setFont(f)
 
 
+
+	def start_ssh_client_worker(self):
+		""" create a worker thread to handle the Ssh connection
+		"""
+		self.__ssh_client_worker = Util.SshClientWorker()
+
+		self.__ssh_client_worker.finished.connect(self.__ssh_client_worker.deleteLater)
+		self.__ssh_client_worker.finished_closing_ssh_connection.connect(
+			self.__ssh_client_worker.quit)
+		self.__ssh_client_worker.finished_connecting_to_server.connect(
+			self.connected_to_server, Qt.DirectConnection)
+		self.__ssh_client_worker.finished_executing_cmd.connect(
+			self.cmd_result, Qt.DirectConnection)
+
+		self.close_ssh_connection.connect(self.__ssh_client_worker.start_closing_ssh_connection, Qt.DirectConnection)
+		self.connect_to_ssh_server.connect(self.__ssh_client_worker.start_connecting_to_server, Qt.DirectConnection)
+		self.execute_cmd.connect(self.__ssh_client_worker.start_executing_cmd, Qt.DirectConnection)
+
+		self.__ssh_client_worker.start()
+
+
+	def get_cmds_queue(self):
+		""" generate a queue of commands expected to be executed, with regard to action to be 
+			performed : deauthendicate, blacklist ...
+
+			0 --> deauth
+			1 --> add to black list
+			2 --> remove from black list
+		"""
+		
+		return Queue()
+
+
+	@pyqtSlot('QString')
+	def validate(self, new_text):
+
+		if len(self.__ip.text()) > 0 and \
+			len(self.__port.text()) > 0 and \
+			len(self.__username.text()) > 0 and \
+			len(self.__pwd.text()) > 0:
+
+			self.__conn_btn.setEnabled(True)
+		else:
+			self.__conn_btn.setEnabled(False)
+
+
 	@pyqtSlot()
-	def addNewNetwork(self):
+	def connect_to_server(self):
+		""" call this method when 'connect' button is hit
 		"""
-		add a new network's gateway ssh server connection details
+
+		self.connect_to_ssh_server.emit(self.__ip.text(), int(self.__port.text()),\
+			self.__username.text(), self.__pwd.text())
+
+
+	@pyqtSlot(bool, 'QString')
+	def connected_to_server(self, is_connected, msg):
+		""" called immediately the connection attempt is over
 		"""
-		self.__c += 1
-		self.__nets.setRowCount(self.__c)
-		# add
-		#self.__nets.setItem(self.__c, 0, QTableWidgetItem(str(self.__c)))
-		self.__nets.setItem(self.__c, 0, QTableWidgetItem())
-		self.__nets.setItem(self.__c, 1, QTableWidgetItem())
-		self.__nets.setItem(self.__c, 2, QTableWidgetItem())
-		self.__nets.setItem(self.__c, 3, QTableWidgetItem())
-		self.__nets.setItem(self.__c, 4, QTableWidgetItem())
-		# set focus to this row
-	
-	@pyqtSlot()
-	def removeNetwork(self):
-		if self.__c > 0:
-			if self.__nets.currentRow()	!= -1:
-				self.__nets.removeRow(self.__nets.currentRow())
-				self.__c -= 1
-				self.__nets.setRowCount(self.__c)
-				self.__nets.setCurrentCell(-1, -1)
-				self.__modif = True
+
+		if is_connected:
+			pass
+
+		else:
+			pass
 
 
-	@pyqtSlot(QTableWidgetItem)
-	def setModified(self, item):
-		self.__modif = True
-
-
-	#####################
-	## Utility methods
-	#####################
-	@staticmethod
-	def getSettingsView():
+	@pyqtSlot(bool, 'QString', 'QString')
+	def cmd_result(is_success, output, error):
+		""" called after a command has been executed successfully
 		"""
-		read the configurations json file, parse and create a table
-		"""
-		c = 0
-		tb = QTableWidget()
-		hdrs = ['Ip Address','Port', 'Network Name', 'User', 'Password']
-		tb.setColumnCount(len(hdrs))
-		tb.setRowCount(c)
-		tb.setColumnWidth(0,150)
-		tb.setColumnWidth(1,60)
-		tb.setColumnWidth(2,150)
-		tb.setColumnWidth(3,150)
-		tb.setColumnWidth(4,150)
-		tb.setHorizontalHeaderLabels(hdrs)
-		tb.setEditTriggers(QAbstractItemView.DoubleClicked);
-		tb.setSelectionBehavior(QAbstractItemView.SelectRows);
-		tb.setSelectionMode(QAbstractItemView.SingleSelection);
-		tb.verticalHeader().setVisible(False)
-		tb.setGridStyle(Qt.DashLine)
-		tb.setShowGrid(True);
 
-		data = Configs.getSettingsData()
-		if data:
-			c = len(data)
-			tb.setRowCount(c)
-			for index, key in enumerate(list(data.keys())):
-				net = data.get(key)
-				if net:
-					tb.setItem(index, 0, QTableWidgetItem(key))
-					tb.setItem(index, 1, QTableWidgetItem(net['port']))
-					tb.setItem(index, 2, QTableWidgetItem(net['name']))
-					tb.setItem(index, 3, QTableWidgetItem(net['user']))
-					tb.setItem(index, 4, QTableWidgetItem(net['pwd']))
-
-		return (tb, c)
-
-
-
-	@staticmethod
-	def getSettingsData():
-		"""
-		read the settings file
-		"""
-		try:
-			with open('appData/settings', 'rb') as f:
-				data = pickle.load(f)
-				return data
-		except:
-			return False
-
-	@staticmethod
-	def getBlackList():
-		"""
-		read the blacklist file
-		"""
-		try:
-			with open('appData/blacklist', 'rb') as f:
-				data = pickle.load(f)
-				return data
-		except:
-			return False
-
-
-	@staticmethod
-	def writeSettings(sett):
-		"""
-		write the settings to disk
-		"""
-		with open('appData/settings', 'wb') as f:
-			pickle.dump(sett, f)
-
-
-	@staticmethod
-	def writeBlckList(bl):
-		"""
-		write new blacklist
-		"""
-		with open('appData/blacklist', 'wb') as f:
-			pickle.dump(bl, f)
+		pass
