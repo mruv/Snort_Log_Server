@@ -14,10 +14,10 @@ class SshClientWorker(QThread):
 	"""
 
 	finished_connecting_to_server = pyqtSignal(bool, 'QString')
-	finished_executing_cmd = pyqtSignal(bool, 'QString', 'QString')
+	finished_executing_cmd = pyqtSignal(bool, 'QString', 'QString', 'QString')
 	finished_closing_ssh_connection = pyqtSignal()
 
-	def __init__(self, ):
+	def __init__(self):
 
 		super(SshClientWorker, self).__init__()
 		# keep commands in a queue
@@ -47,13 +47,13 @@ class SshClientWorker(QThread):
 			self.finished_connecting_to_server.emit(True, 'connected')
 
 		except paramiko.AuthenticationException:
-			self.finished_connecting_to_server.emit(False, 'Invalid Username of Password')
+			self.finished_connecting_to_server.emit(False, 'Authentication error')
 
-		except paramiko.SSHException:
-			self.finished_connecting_to_server.emit(False, 'Unknown connection error')
+		except paramiko.SSHException as e1:
+			self.finished_connecting_to_server.emit(False, e1.__str__())
 
-		except socket.error:
-			self.finished_connecting_to_server.emit(False, 'Unknown connection error')
+		except socket.error as e2:
+			self.finished_connecting_to_server.emit(False, e2.__str__())
 
 
 	@pyqtSlot('QString')
@@ -63,17 +63,16 @@ class SshClientWorker(QThread):
 		try:
 			# execute
 			ssh_stdin, ssh_stdout, ssh_stderr = self.__ssh_client.exec_command(cmd)
+			self.finished_executing_cmd.emit(True, cmd, ssh_stdout.read(), ssh_stderr.read())
 
-			self.finished_executing_cmd.emit(True, ssh_stdout.read(), ssh_stderr.read())
-
-		except paramiko.SSHException:
+		except paramiko.SSHException as e:
 			# command exceution failed
-			self.finished_executing_cmd.emit(False,'','')
+			self.finished_executing_cmd.emit(False,'', e.__str__())
 
 
 	@pyqtSlot()
 	def start_closing_ssh_connection(self):
-		
+
 		self.__ssh_client.close()
 		self.finished_closing_ssh_connection.emit()
 
@@ -182,7 +181,7 @@ class UdpServerWorker(QThread):
 		""" get a string representation of the snort message
 		"""
 		return '[ ' + msg['src'] + ' => ' + msg['dest'] + ' ] [ ' + \
-				msg['proto'] + ' ] [ ' + msg['msg'] + ' ] [ ' + ('THREAT' if(msg['is_threat']) else 'NOT_THREAT')
+				msg['proto'] + ' ] [ ' + msg['msg'] + ' ] [ ' + ('THREAT' if(msg['is_threat']) else 'NOT_THREAT') + ' ]'
 
 
 	@pyqtSlot()
