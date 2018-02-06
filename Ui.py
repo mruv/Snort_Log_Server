@@ -1,18 +1,168 @@
 
 from PyQt5.QtWidgets import (
-			QMainWindow, QMenu, QSplitter, QAction, QTableWidget, QTableWidgetItem,
-			QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QAbstractItemView, QSystemTrayIcon,
-			QMessageBox, QFormLayout, QLineEdit, QLabel, QDialog, QTextEdit
-			)
-from PyQt5.QtCore import (pyqtSlot, pyqtSignal, Qt)
+							QMainWindow, QMenu, QSplitter, QAction, QTableWidget, QTableWidgetItem,
+							QGroupBox, QPushButton, QVBoxLayout, QHBoxLayout, QAbstractItemView, QSystemTrayIcon,
+							QMessageBox, QFormLayout, QLineEdit, QLabel, QDialog, QTextEdit, QFrame, QStatusBar
+							)
+from PyQt5.QtCore import (pyqtSlot, pyqtSignal, Qt, QEventLoop)
 from PyQt5.QtGui import (QPalette, QFont, QColor, QIcon)
 from subprocess import (Popen, PIPE)
+from queue import Queue
 import sys
 import time
 import threading
+import re
 import Util
 
 
+
+class NotifWidget(QDialog):
+	""" Notify admin about a new hostile host
+	"""
+
+	NOTIF_Q       = Queue()
+	NOTIF_VISIBLE = False
+
+	def __init__(self, ip):
+		super(NotifWidget, self).__init__()
+
+		self.__ip = QLabel(ip)
+		self.setWindowTitle('Notification')
+		self.setWindowIcon(QIcon('icons/app.png'))
+		self.setFixedSize(600, 400)
+
+
+	def style(self):
+
+		#self.setStyleSheet('background-color: #eee')
+		self.__hdr.setStyleSheet('color: blue; font-size: 36px;margin-top: 20px;\
+			font-family:"Lucida Console, Courier";')
+		self.__hdr.setAlignment(Qt.AlignCenter)
+
+		self.__bdy.setStyleSheet('color: #333; font-size: 24px;\
+			font-family:"Lucida Console, Courier, monospace";margin-top: 50px;')
+		self.__bdy.setAlignment(Qt.AlignCenter)
+
+		self.__ip.setStyleSheet('color: red; font-size: 30px;\
+			font-family:"Lucida Console, Courier, monospace";')
+		self.__ip.setAlignment(Qt.AlignCenter)
+
+
+	def set_up_notif_widget(self):
+
+		self.__hdr = QLabel('Hello Mr. Rop!')
+		self.__bdy = QLabel('You have a new hostile host')
+		self.__ly  = QVBoxLayout(self)
+		self.__b_ly = QHBoxLayout()
+
+		self.__ign_btn = QPushButton('Ignore')
+		self.__vw_btn  = QPushButton('View')
+
+		self.__ign_btn.clicked.connect(self.ignore)
+		self.__vw_btn.clicked.connect(self.view)
+
+		self.__b_ly.addStretch()
+		self.__b_ly.addWidget(self.__vw_btn)
+		self.__b_ly.addWidget(self.__ign_btn)
+		self.__b_ly.addStretch()
+
+		self.__ly.addWidget(self.__hdr)
+		self.__ly.addWidget(self.__bdy)
+		self.__ly.addWidget(self.__ip)
+		self.__ly.addStretch()
+		self.__ly.addLayout(self.__b_ly)
+
+		self.style()
+
+
+
+	def closeEvent(self, event):
+
+		butt = QMessageBox.question(self, 'New Hostile Host', 'Are you sure you want to ignore this notification?')
+
+		if butt == QMessageBox.Yes:
+			self.done(0)
+		else:
+			event.ignore()
+
+	@pyqtSlot()
+	def view(self):
+		""" view the hostile host
+		"""
+		self.done(1)
+
+	@pyqtSlot()
+	def ignore(self):
+		""" ignore the notification
+		"""
+		self.done(0)
+
+
+
+
+class StatusBar(QStatusBar):
+	""" customize the status bar
+	"""
+
+	def __init__(self):
+		super(StatusBar, self).__init__()
+
+		self.__all = 0
+		self.__anom = 0
+		self.__splitter = QSplitter(Qt.Horizontal)
+		self.__msg = QLabel()
+		self.__msg.setMinimumWidth(600)
+		self.setStyleSheet('background-color: #ddd')
+		self.__msg.setStyleSheet('color: blue')
+
+		self.__all_lbl = QLabel()
+		self.__all_lbl.setStyleSheet('color: blue')
+		self.__anom_lbl = QLabel()
+		self.__anom_lbl.setStyleSheet('color: red')
+
+
+	def set_up_statusbar(self):
+
+		self.__frm_1 = QFrame()
+		self.__frm_2 = QFrame()
+		self.__ly_1 = QHBoxLayout(self.__frm_1)
+		self.__ly_2 = QHBoxLayout(self.__frm_2)
+
+		self.__frm_1.setMinimumWidth(200)
+		self.__frm_2.setMinimumWidth(200)
+
+		# add widgets to layouts
+		self.__anom_nm = QLabel('Threats : ')
+		self.__all_nm = QLabel('All Packets : ')
+		self.__ly_1.addWidget(self.__all_nm)
+		self.__ly_1.addWidget(self.__all_lbl)
+		self.__ly_1.addStretch()
+		self.__ly_2.addWidget(self.__anom_nm)
+		self.__ly_2.addWidget(self.__anom_lbl)
+		self.__ly_2.addStretch()
+
+		self.addWidget(self.__msg)
+		self.addWidget(self.__frm_1)
+		self.addWidget(self.__frm_2)
+
+
+	@pyqtSlot()
+	def incr_no_of_attacks(self):
+		""" increment the count of the attacks / messages about some anomolous packet
+		"""
+		self.__anom += 1
+		self.__anom_lbl.setText(str(self.__anom))
+
+
+	@pyqtSlot('QString')
+	def incr_all_pkts(self, msg):
+		""" increment the no of messages / packets received by log server
+		"""
+
+		self.__msg.setText(msg)
+
+		self.__all += 1
+		self.__all_lbl.setText(str(self.__all))
 
 
 class SystemTrayIcon(QSystemTrayIcon):
@@ -62,6 +212,10 @@ class Logs(QTableWidget):
 	stop_server = pyqtSignal()
 	new_alert = pyqtSignal('QString')
 
+	another_msg = pyqtSignal('QString')
+	another_anom_msg = pyqtSignal()
+
+
 
 	def __init__(self):
 
@@ -85,7 +239,7 @@ class Logs(QTableWidget):
 		f = QFont('Lucida Console, Courier, monospace')
 		#f.setBold(True)
 		p = QPalette()
-		p.setColor(QPalette.Text, QColor('green'))
+		p.setColor(QPalette.Text, QColor(0, 255, 255))
 		#p.setColor(QPalette.Base, QColor('black'))
 		p.setColor(QPalette.Base, QColor('#000'))
 		self.setPalette(p)
@@ -133,8 +287,11 @@ class Logs(QTableWidget):
 		# increment count
 		self.__cnt += 1
 
+		self.another_msg.emit(msg['desc'])
+
 		if msg['is_threat']:
 			self.new_alert.emit(msg['src'].strip().split(':')[0])
+			self.another_anom_msg.emit()
 		
 
 
@@ -143,20 +300,22 @@ class Hosts(QSplitter):
 	"""
 
 	mac_resolved = pyqtSignal(int, 'QString')
+	view_notif   = pyqtSignal()
+	ignore_notif = pyqtSignal('QString')
+	next_notif   = pyqtSignal()
 
 	def __init__(self):
 		super(Hosts, self).__init__(Qt.Vertical)
 
 
 	def style(self):
-		"""
-		style the view
+		""" style the view
 		"""
 		
 		p = QPalette()
 		p.setColor(QPalette.Text, QColor(0, 255, 255))
 		#p.setColor(QPalette.Base, QColor('black'))
-		p.setColor(QPalette.Base, QColor('#333'))
+		p.setColor(QPalette.Base, QColor('#000'))
 		self.setPalette(p)
 		#self.setFont(f)
 
@@ -258,7 +417,7 @@ class Hosts(QSplitter):
 			in order to resolve IP's MAC address
 		"""
 
-		cmd = 'c:\\Windows\\System32\\ping %s -n 3' % ip
+		cmd = 'c:\\Windows\\System32\\ping %s -n 10' % ip
 		p   = Popen(cmd, shell=True, stdin=PIPE, stderr=PIPE, stdout=PIPE)
 		res = p.stdout.read()
 
@@ -329,6 +488,35 @@ class Hosts(QSplitter):
 			worker.setDaemon(True)
 			worker.start()
 
+			# alert admin
+			if not self.isVisible():
+				NotifWidget.NOTIF_Q.put(ip)
+				if not NotifWidget.NOTIF_VISIBLE:
+					self.next_notif.emit()
+
+
+	@pyqtSlot()
+	def show_next_notif(self):
+		
+		NotifWidget.NOTIF_VISIBLE = True
+		ip = NotifWidget.NOTIF_Q.get()
+		notif = NotifWidget(ip)
+		notif.set_up_notif_widget()
+
+		notif.finished.connect(notif.deleteLater)
+
+		if notif.exec() == 0:
+			if not NotifWidget.NOTIF_Q.empty():
+				self.next_notif.emit()
+				self.ignore_notif.emit(ip)
+		else:
+			while not NotifWidget.NOTIF_Q.empty():
+				NotifWidget.NOTIF_Q.get()
+
+			NotifWidget.NOTIF_VISIBLE = False
+			self.view_notif.emit()
+
+
 
 	@pyqtSlot(int, int, int, int)
 	def set_death_bl_active(self, cr, cc, pr, pc):
@@ -362,7 +550,7 @@ class Hosts(QSplitter):
 		row = self.__hh_table.currentRow()
 		mac = self.__hh_table.item(row, 1).text()
 
-		if mac == 'unknown':
+		if mac == 'unknown' or mac == 'resolving ...':
 			qmb = QMessageBox(self)
 			qmb.setText('Cannot add machine to black list. Could not resolve MAC address')
 			qmb.setWindowTitle('Snort Log Server')
@@ -514,11 +702,21 @@ class MainWindow(QMainWindow):
 		self.__splitter.setContentsMargins(15, 25, 15, 30)
 		self.setCentralWidget(self.__splitter)
 
+		self.__hosts.view_notif.connect(self.show)
+		self.__hosts.next_notif.connect(self.__hosts.show_next_notif)
+		#self.__hosts.ignore_notif.connect()
+
 
 	def create_status_bar(self):
 		""" create the status bar
 		"""
-		self.__status_bar = self.statusBar()
+		self.__status_bar = StatusBar()
+		self.__status_bar.set_up_statusbar()
+
+		self.setStatusBar(self.__status_bar)
+
+		self.__logs.another_msg.connect(self.__status_bar.incr_all_pkts)
+		self.__logs.another_anom_msg.connect(self.__status_bar.incr_no_of_attacks)
 
 
 	@pyqtSlot()
@@ -564,7 +762,7 @@ class SshClientWidget(QDialog):
 
 		self.setWindowTitle('SSH Client')
 		self.setWindowIcon(QIcon('icons/app.png'))
-		self.setFixedSize(600, 500)
+		self.setFixedSize(600, 400)
 
 
 	def closeEvent(self, event):
@@ -586,6 +784,7 @@ class SshClientWidget(QDialog):
 		"""
 
 		self.__main_ly = QVBoxLayout(self)
+		self.__form_outer_ly = QHBoxLayout()
 		self.__form_ly = QFormLayout()
 		self.__btn_ly = QHBoxLayout()
 
@@ -607,10 +806,10 @@ class SshClientWidget(QDialog):
 
 		# signal -- slot connections
 		self.__conn_btn.clicked.connect(self.connect_to_server)
-		self.__ip.textChanged.connect(self.validate)
-		self.__port.textChanged.connect(self.validate)
-		self.__username.textChanged.connect(self.validate)
-		self.__pwd.textChanged.connect(self.validate)
+		self.__ip.textEdited.connect(self.validate)
+		self.__port.textEdited.connect(self.validate)
+		self.__username.textEdited.connect(self.validate)
+		self.__pwd.textEdited.connect(self.validate)
 
 		# add to layout
 		self.__form_ly.addRow(QLabel('SSH Ip'), self.__ip)
@@ -618,12 +817,15 @@ class SshClientWidget(QDialog):
 		self.__form_ly.addRow(QLabel('User Name'), self.__username)
 		self.__form_ly.addRow(QLabel('Password'), self.__pwd)
 
+		self.__form_outer_ly.addLayout(self.__form_ly)
+		self.__form_outer_ly.addStretch()
+
 		self.__btn_ly.addWidget(self.__conn_btn)
 		self.__btn_ly.addStretch()
 
-		self.__main_ly.addLayout(self.__form_ly)
+		self.__main_ly.addLayout(self.__form_outer_ly)
 		self.__main_ly.addLayout(self.__btn_ly)
-		self.__main_ly.addWidget(self.__conn_btn)
+		self.__main_ly.addWidget(self.__logs)
 
 		self.style()
 
@@ -633,8 +835,8 @@ class SshClientWidget(QDialog):
 		f = QFont('Lucida Console, Courier, monospace')
 		#f.setBold(True)
 		p = QPalette()
-		p.setColor(QPalette.Window, QColor('#fff'))
-		p.setColor(QPalette.WindowText, QColor('black'))
+		p.setColor(QPalette.Window, QColor('#ddd'))
+		p.setColor(QPalette.WindowText, QColor('blue'))
 		
 		#p.setColor(QPalette.)
 		self.setPalette(p)
@@ -674,11 +876,30 @@ class SshClientWidget(QDialog):
 		return Queue()
 
 
+	def is_valid_ip(self, ip):
+		try:
+			print(re.match(r'^[1-2]{0,1}\d{1,2}.[1-2]{0,1}\d{1,2}.[1-2]{0,1}\d{1,2}.[1-2]{0,1}\d{1,2}$', ip).string)
+			return True
+		except AttributeError as e:
+			print(e)
+			return False
+
+
+	def is_valid_port(self, port):
+		if len(port) == 0:
+			return False
+		else:
+			try:
+				p = int(port)
+				return (p >= 1 and p <= 65535)
+			except ValueError:
+				return False
+
 	@pyqtSlot('QString')
 	def validate(self, new_text):
 
-		if len(self.__ip.text()) > 0 and \
-			len(self.__port.text()) > 0 and \
+		if self.is_valid_ip(self.__ip.text()) and \
+			self.is_valid_port(self.__port.text()) and \
 			len(self.__username.text()) > 0 and \
 			len(self.__pwd.text()) > 0:
 
@@ -692,6 +913,7 @@ class SshClientWidget(QDialog):
 		""" call this method when 'connect' button is hit
 		"""
 
+		self.__logs.append('-- connecting to server ...')
 		self.connect_to_ssh_server.emit(self.__ip.text(), int(self.__port.text()),\
 			self.__username.text(), self.__pwd.text())
 
@@ -702,15 +924,17 @@ class SshClientWidget(QDialog):
 		"""
 
 		if is_connected:
-			pass
+			self.__logs.append('   CONNECTED')
+
+
 
 		else:
-			pass
+			self.__logs.append('   CONNECTION FAILED : ' + msg)
 
 
-	@pyqtSlot(bool, 'QString', 'QString')
-	def cmd_result(is_success, output, error):
+	@pyqtSlot(bool, 'QString', 'QString', 'QString')
+	def cmd_result(is_success, cmd, output, error):
 		""" called after a command has been executed successfully
 		"""
 
-		pass
+		self.__logs.append(output)
