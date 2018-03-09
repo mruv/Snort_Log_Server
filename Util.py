@@ -162,7 +162,7 @@ class UdpServerWorker(QThread):
 		""" parse an error message
 		"""
 		if 'Classification' not in err:
-			return (True, {0:err})
+			return (False, {0:err})
 
 		# Reset outside window [Classification: Potentially Bad Traffic] [Priority: 2]
 		pos = err.find('[')
