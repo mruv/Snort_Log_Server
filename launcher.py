@@ -13,7 +13,7 @@ def launch(args):
 
 	win = Ui.MainWindow()
 	win.set_up_ui()
-	win.setVisible(True)
+	#win.setVisible(True)
 
 	app.setQuitOnLastWindowClosed(False)
 	# start event loop
