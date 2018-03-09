@@ -112,7 +112,7 @@ class StatusBar(QStatusBar):
 		self.__splitter = QSplitter(Qt.Horizontal)
 		self.__msg = QLabel()
 		self.__msg.setMinimumWidth(600)
-		self.setStyleSheet('background-color: #ddd')
+		self.setStyleSheet('background-color: #bbb')
 		self.__msg.setStyleSheet('color: blue')
 
 		self.__all_lbl = QLabel()
@@ -281,7 +281,7 @@ class Logs(QTableWidget):
 		self.setItem(self.__cnt, 3, QTableWidgetItem(msg['proto']))
 		self.setItem(self.__cnt, 4, QTableWidgetItem(msg['facility']))
 		self.setItem(self.__cnt, 5, QTableWidgetItem(msg['severity']))
-		self.setItem(self.__cnt, 6, QTableWidgetItem(msg['is_threat']))
+		self.setItem(self.__cnt, 6, QTableWidgetItem('YES' if(msg['is_threat']) else 'NO'))
 		self.setItem(self.__cnt, 7, QTableWidgetItem(msg['msg']))
 
 		# increment count
@@ -290,7 +290,7 @@ class Logs(QTableWidget):
 		self.another_msg.emit(msg['desc'])
 
 		if msg['is_threat']:
-			self.new_alert.emit(msg['src'].strip().split(':')[0])
+			self.new_alert.emit(msg['src'][:msg['src'].rfind(':')])
 			self.another_anom_msg.emit()
 		
 
@@ -616,7 +616,9 @@ class MainWindow(QMainWindow):
 		self.setWindowTitle('Snort Log Server')
 		self.setWindowIcon(QIcon('icons/app.png'))
 		self.setContentsMargins(0, 7, 0, 0)
-		self.setGeometry(100, 50, 1200, 600)
+		self.setMinimumSize(1000, 600)
+		self.showMaximized()
+		#self.setGeometry(100, 50, 1200, 600)
 
 
 	def closeEvent(self, event):
@@ -697,7 +699,7 @@ class MainWindow(QMainWindow):
 
 		self.__splitter.addWidget(self.__gb)
 		self.__splitter.addWidget(self.__hosts)
-		self.__splitter.setSizes([700, 400])
+		self.__splitter.setSizes([1000, 500])
 
 		self.__splitter.setContentsMargins(15, 25, 15, 30)
 		self.setCentralWidget(self.__splitter)
