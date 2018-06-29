@@ -28,7 +28,7 @@ class NotifWidget(QDialog):
 
 		self.__ip = QLabel(ip)
 		self.setWindowTitle('Notification')
-		self.setWindowIcon(QIcon('icons/app.png'))
+		self.setWindowIcon(QIcon('app.png'))
 		self.setFixedSize(600, 400)
 
 
@@ -189,7 +189,7 @@ class SystemTrayIcon(QSystemTrayIcon):
 		self.__quit.triggered.connect(self.close_app_slot)
 
 		self.__menu.addActions([self.__show, self.__quit])
-		self.setIcon(QIcon('icons/app.png'))
+		self.setIcon(QIcon('app.png'))
 		self.setContextMenu(self.__menu)
 
 
@@ -577,7 +577,7 @@ class Hosts(QSplitter):
 			qmb = QMessageBox()
 			qmb.setText('Cannot remove machine from the network. Could not resolve MAC address')
 			qmb.setWindowTitle('Snort Log Server')
-			qmb.setWindowIcon(QIcon('icons\\app.png'))
+			qmb.setWindowIcon(QIcon('app.png'))
 			qmb.exec()
 
 		else:
@@ -614,7 +614,7 @@ class MainWindow(QMainWindow):
 		"""
 		super(MainWindow, self).__init__()
 		self.setWindowTitle('Snort Log Server')
-		self.setWindowIcon(QIcon('icons/app.png'))
+		self.setWindowIcon(QIcon('app.png'))
 		self.setContentsMargins(0, 7, 0, 0)
 		self.setMinimumSize(1000, 600)
 		self.showMaximized()
